@@ -1,0 +1,28 @@
+[package]
+name = "collage-studio"
+version = "1.0.0"
+description = "Local-first photo collage editor"
+authors = []
+edition = "2021"
+rust-version = "1.94"
+license = "MIT"
+default-run = "collage-studio"
+
+[lib]
+name = "collage_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.7.1", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.1", features = [] }
+tauri-plugin-dialog = "=2.8.1"
+tauri-plugin-fs = "=2.6.0"
+tauri-plugin-opener = "=2.7.0"
+tauri-plugin-native-save = { path = "plugins/native-save" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

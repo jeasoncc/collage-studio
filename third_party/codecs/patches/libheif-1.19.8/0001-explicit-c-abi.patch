@@ -1,0 +1,6 @@
+--- a/libheif/api/libheif/heif.cc
++++ b/libheif/api/libheif/heif.cc
+@@ -45,3 +45,0 @@
+-#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_STANDALONE_WASM__)
+-#include "heif_emscripten.h"
+-#endif

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=拼贴时光
+Name[en]=Collage Studio
+Comment=Create photo collages locally
+Comment[zh_CN]=在本地创作照片拼贴
+Exec=collage-studio
+Icon=top.szlh.collage
+Terminal=false
+Categories=Graphics;Photography;
+StartupWMClass=collage-studio

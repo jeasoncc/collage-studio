@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "sources": [
+    {
+      "name": "emscripten",
+      "version": "4.0.9",
+      "url": "https://github.com/emscripten-core/emscripten/archive/refs/tags/4.0.9.tar.gz",
+      "file": "emscripten-4.0.9.tar.gz",
+      "sha256": "11a7d950453ee31da03ee3c3b261934ad3d7d2e470e41ea3222a13cecb9b98ef"
+    },
+    {
+      "name": "libheif",
+      "version": "1.19.8",
+      "url": "https://codeload.github.com/strukturag/libheif/tar.gz/refs/tags/v1.19.8",
+      "file": "libheif-1.19.8.tar.gz",
+      "sha256": "0d67481c2b3d855b27b162e21b39152100346098f75cb5da31db4003d9077680"
+    },
+    {
+      "name": "libde265",
+      "version": "1.0.16",
+      "url": "https://codeload.github.com/strukturag/libde265/tar.gz/refs/tags/v1.0.16",
+      "file": "libde265-1.0.16.tar.gz",
+      "sha256": "ed12c931759c1575848832f70db5071a001ac813db4e4f568ee08aef6e234d4e"
+    },
+    {
+      "name": "ffmpeg",
+      "version": "7.1.1",
+      "url": "https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz",
+      "file": "ffmpeg-7.1.1.tar.xz",
+      "sha256": "733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1"
+    },
+    {
+      "name": "aac-encoder",
+      "version": "1.61.3",
+      "url": "https://registry.npmjs.org/@mediabunny/aac-encoder/-/aac-encoder-1.61.3.tgz",
+      "file": "aac-encoder-1.61.3.tar.gz",
+      "sha256": "d2cec48cb1ed923f1c1c48b3bdabdd33e9f94e197405873f9f119abe8a913d5f"
+    },
+    {
+      "name": "mediabunny",
+      "version": "1.61.3",
+      "url": "https://registry.npmjs.org/mediabunny/-/mediabunny-1.61.3.tgz",
+      "file": "mediabunny-1.61.3.tar.gz",
+      "sha256": "507e6f75def0ba3748b3b52e4a8ed2937cf311897f4984b90510b56b279bc3d1"
+    },
+    {
+      "name": "emsdk",
+      "version": "4.0.9",
+      "url": "https://codeload.github.com/emscripten-core/emsdk/tar.gz/refs/tags/4.0.9",
+      "file": "emsdk-4.0.9.tar.gz",
+      "sha256": "a5507307854f2b0997d278589f1cd82f949358f5dbde42fadc348f128a4f4c02"
+    },
+    {
+      "name": "aac-misc",
+      "version": "9d36fc5779b254904bc609e66f2cd80ed8390b4b",
+      "url": "https://raw.githubusercontent.com/Vanilagy/mediabunny/9d36fc5779b254904bc609e66f2cd80ed8390b4b/shared/aac-misc.ts",
+      "file": "aac-misc-9d36fc5779b254904bc609e66f2cd80ed8390b4b.ts",
+      "sha256": "5d5cb7fd115281e20571048339d5c50acb074432514d71e7ab67f3a5b7669044"
+    },
+    {
+      "name": "bitstream",
+      "version": "9d36fc5779b254904bc609e66f2cd80ed8390b4b",
+      "url": "https://raw.githubusercontent.com/Vanilagy/mediabunny/9d36fc5779b254904bc609e66f2cd80ed8390b4b/shared/bitstream.ts",
+      "file": "bitstream-9d36fc5779b254904bc609e66f2cd80ed8390b4b.ts",
+      "sha256": "6b380f4b02631abb36eecb3b8837c9dcf722a32702169817acd91fefa93a69d1"
+    }
+  ]
+}

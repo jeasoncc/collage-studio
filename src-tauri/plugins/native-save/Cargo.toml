@@ -1,0 +1,15 @@
+[package]
+name = "tauri-plugin-native-save"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.94"
+links = "tauri-plugin-native-save"
+license = "MIT"
+
+[build-dependencies]
+tauri-plugin = { version = "=2.7.1", features = ["build"] }
+
+[dependencies]
+tauri = "=2.12.1"
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"

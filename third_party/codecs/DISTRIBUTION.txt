@@ -1,0 +1,139 @@
+Collage Studio: codec corresponding-source and recombination materials
+=====================================================================
+
+This directory replaces, rather than attempts to identify, the unknown binary
+revisions in heic2any 0.0.4 and the npm AAC encoder's embedded FFmpeg. No opaque
+upstream codec artifact is used by the application's imports. Historical package
+licenses are retained in public/third-party-notices.txt for attribution.
+
+Actual source inputs
+--------------------
+libheif 1.19.8 + libde265 1.0.16: HEVC/HEIC decode, LGPL-3.0-or-later.
+FFmpeg 7.1.1: built-in AAC-LC encode, libavcodec + libavutil, LGPL-2.1-or-later
+with permissive portions. GPL/nonfree/external libraries/autodetection disabled.
+AAC wrapper and C bridge: published @mediabunny/aac-encoder 1.61.3 source, MPL-2.0.
+Shared AAC/bitstream source: Mediabunny commit
+9d36fc5779b254904bc609e66f2cd80ed8390b4b, MPL-2.0.
+Mediabunny core 1.61.3: complete published source archive retained for MPL source
+availability. It is a separate application dependency pinned by the root lock.
+Emscripten + emsdk 4.0.9: pinned build tools and runtime source. The emsdk release
+mapping pins upstream toolchain release cb2a69bce627bd2247624c71fc12907cb8785d2f.
+
+Every downloaded input is present in sources/, listed with an observed SHA-256
+and its exact download URL in sources.lock.json. These are new rebuild inputs;
+they are NOT assertions about the revision of the old opaque WASM. The npm AAC
+archive is retained as original source provenance; its precompiled dist/ is
+never extracted into or referenced by the actual build.
+
+Original license texts remain in licenses/ and the original archives. Full
+per-file notices and copyrights remain in the corresponding source archives.
+The two relocated AAC encoder imports and the local worker adapter are MPL-2.0
+modifications. Shared helper code, worker, C bridge and original copyrights
+are retained. Local HEIC adapters use the application license; neither changes
+the LGPL licenses of the codec libraries.
+
+Build from complete application source
+--------------------------------------
+Prerequisites on Linux/macOS: Bun (version from the release's packageManager),
+Bash, Python 3, curl, tar (with gzip/xz support), cmake, make, pkg-config,
+autoconf, automake, libtool, and patch. Emscripten is installed by the script;
+no existing host FFmpeg/libheif installation or Docker runtime is required.
+First toolchain installation needs access to Emscripten's download service.
+Use ordinary HTTPS_PROXY/HTTP_PROXY environment variables if needed. Never
+publish proxy credentials or signing credentials. Source archives ship offline;
+the compiler toolchain itself is installed from the pinned emsdk manifest.
+
+From the root of the exact release source tree:
+  bun install --frozen-lockfile
+  bun scripts/license-codecs.mjs download
+  bun scripts/license-codecs.mjs build
+  bun run build
+
+The root application build must invoke the codec build before Vue type checking
+and Vite. Do not run two codec builds concurrently. CODEC_BUILD_JOBS defaults
+to 2 and may be increased explicitly. CODEC_FORCE_REBUILD=1 forces recompilation.
+No network request is made by the installed codecs at runtime: both generated
+modules contain their own WASM, and the AAC Worker is bundled locally by Vite.
+HEIC converts the first top-level image to a real PNG, with RGBA/orientation
+handled by libheif. AAC retains the upstream CustomAudioEncoder behavior and
+is registered by the existing application fallback when native AAC is absent.
+AAC uses WASM SIMD. Actual device behavior must be tested; build scripts are
+not themselves behavior verification or a claim of byte-identical output on
+arbitrary host systems.
+
+Generated artifacts and release gate
+------------------------------------
+The generated HEIC module, AAC module/worker, static codec libraries and bridge
+objects are recorded by SHA-256 in build-receipt.json. The receipt also binds
+all shipped codec sources, patches, source locks and build scripts. Unrecorded
+scratch edits cannot enter a build: each build freshly extracts the pinned
+C/C++ archives into .work/. A changed source or generated binary invalidates
+the receipt. There is no fallback to a prebuilt npm blob when a rebuild fails.
+The build also refreshes a bounded generated section in
+public/third-party-notices.txt from the exact shipped Emscripten/musl/LLVM runtime
+license originals. Other attributions and sections remain untouched. Include
+that refreshed notice in web/native assets, not a notice from an older build.
+
+After building the frontend/native application:
+  bun scripts/license-codecs.mjs release release
+
+This command refuses absent/stale artifacts and creates:
+  release/collage-studio-codec-corresponding-source.tar.gz
+  release/collage-studio-codec-corresponding-source.tar.gz.sha256
+
+The archive includes exact complete codec sources, locally modified MPL files,
+all build/download/recombination scripts, original license texts, generated
+artifacts, build receipt, the actual libheif/libde265/libavcodec/libavutil static
+libraries, and non-library bridge objects. It excludes scratch paths/toolchain
+installations. Do not replace this kit with links to upstream HEAD. Publish the
+kit and its checksum next to EVERY corresponding Android/iOS/Linux binary,
+including AUR/Snap/GitHub downloadable releases, and the web build. Publish the
+exact FULL application source (including src/, assets, package.json, bun.lock,
+Vite/PWA config, native project, and native Cargo lock) alongside it too: the
+codec kit alone is not the application-source/recombination delivery.
+AUR/Snap packaging must use that source release and preserve third-party notices;
+GitHub release assets must include both native artifacts and this kit. Tauri
+must bundle dist-native/ locally, including the notice and generated worker/assets.
+Keep the source kit available for as long as required by the applicable licenses.
+A sourcekit URL, source offer, or notice alone is not evidence of publication.
+
+Modification and recombination
+------------------------------
+Recipients may edit the shipped local wrapper/HEIC bridge/application source.
+For library edits, put ordinary unified diffs relative to the library root in:
+  third_party/codecs/patches/libheif-1.19.8/*.patch
+  third_party/codecs/patches/libde265-1.0.16/*.patch
+  third_party/codecs/patches/ffmpeg-7.1.1/*.patch
+Patches are applied with -p1, included in the source kit and receipt, and retained
+when the build refreshes scratch sources. Do not edit .work/ as a source of truth.
+Then run CODEC_FORCE_REBUILD=1 bun scripts/license-codecs.mjs build and rebuild
+the app. This recreates the combined work from modified library source.
+For direct relinking, source .work/emsdk/emsdk_env.sh after installing the pinned
+SDK and use the exact em++/emcc linker invocations in license-build-codecs.sh,
+replacing the corresponding relink/*.a with your own modified static library.
+The shipped relink/heif-bridge.o and relink/aac-bridge.o are the non-library
+bridge objects; their C sources are also supplied. Rebundle the AAC worker with
+Bun and rebuild Vite using the complete application source. A directly modified
+binary cannot use an old build receipt; rebuild through recorded sources/patches
+before redistributing a new release and generate a new corresponding-source kit.
+
+Installation information and recipient rights
+---------------------------------------------
+No project EULA may forbid replacement of LGPL-covered components or reverse
+engineering for debugging their modifications. Linux builds need no publisher
+secret: build with the shipped Tauri/Cargo/frontend source and install your own
+package or run the locally built binary. Android recipients can build/sign
+with their OWN Android SDK and keystore; to install over the publisher-signed
+app Android requires the same key, so export .collage drafts first and uninstall
+the old app or choose a different identifier for side-by-side installation.
+No publisher signing secret is necessary or distributed. iOS builds need Xcode,
+the recipient's OWN provisioning/development signing and an allowed device;
+Apple's platform restrictions remain real, and we do not claim sideloading or
+App Store acceptance has been verified. Complete unsigned native source/build
+settings must remain available. A distributor who introduces an installation
+lock must separately supply any installation information needed under LGPLv3;
+this kit does not waive that requirement or promise legal compliance.
+
+Not a legal opinion: exact source identity and concrete rebuild/recombination
+paths are engineering evidence. Successful native/web builds and real HEIC/AAC
+smokes are release prerequisites; this file does not claim they have occurred.

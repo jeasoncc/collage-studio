@@ -1,0 +1,26 @@
+/* Self-hosted WOFF2 only. Exact provenance and complete OFL texts are retained
+   in public/third-party-notices.txt. No local() or remote font sources. */
+@font-face {
+  font-family: 'LXGW WenKai';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('@fontsource/lxgw-wenkai/files/lxgw-wenkai-latin-500-normal.woff2') format('woff2');
+}
+
+/* The upstream face is naturally oblique, including when used as normal text. */
+@font-face {
+  font-family: 'Smiley Sans Oblique';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../assets/fonts/SmileySans-Oblique-v2.0.1.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Zhuque Fangsong';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../assets/fonts/ZhuqueFangsong-Regular-v0.212.woff2') format('woff2');
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "local-app",
+  "description": "Local UI may save only user-selected exports and open HTTPS links in the system browser.",
+  "windows": ["main"],
+  "permissions": [
+    "core:resources:allow-close",
+    "dialog:allow-save",
+    "fs:allow-open",
+    "fs:allow-write",
+    "native-save:allow-is-mobile",
+    { "identifier": "opener:allow-open-url", "allow": [{ "url": "https://*" }] },
+    "native-save:allow-prepare",
+    "native-save:allow-append",
+    "native-save:allow-finish",
+    "native-save:allow-discard"
+  ]
+}

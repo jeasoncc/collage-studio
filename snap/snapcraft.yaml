@@ -1,0 +1,92 @@
+name: collage-studio
+base: core24
+version: '1.0.0'
+summary: Local-first photo collage editor
+description: |
+  拼贴时光 (Collage Studio) arranges photos into polished collages with local
+  image editing and export. Your drafts remain on this device. This package
+  embeds the application assets and runs no local or remote backend daemon.
+grade: stable
+confinement: strict
+license: MIT
+icon: public/icons/icon-512.png
+
+platforms:
+  amd64:
+    build-on: [amd64]
+    build-for: [amd64]
+  arm64:
+    build-on: [arm64]
+    build-for: [arm64]
+
+apps:
+  collage-studio:
+    command: usr/bin/collage-studio
+    desktop: usr/share/applications/collage-studio.desktop
+    extensions: [gnome]
+    plugs:
+      - home
+      - network
+      # Optional: users connect this explicitly to access removable drives.
+      - removable-media
+    environment:
+      # GTK's file chooser uses the desktop portal for user-selected files,
+      # including files outside the home interface's non-hidden-file access.
+      GTK_USE_PORTAL: '1'
+
+parts:
+  collage-studio:
+    plugin: nil
+    source: .
+    # The core24 GNOME extension adds gnome-46-2404-sdk and the matching
+    # gnome-46-2404 runtime (GTK, WebKitGTK 4.1 and desktop/Wayland/X11 portals).
+    build-packages:
+      - build-essential
+      - pkg-config
+      - curl
+      - ca-certificates
+      - unzip
+      - libssl-dev
+      - libgtk-3-dev
+      - libwebkit2gtk-4.1-dev
+      - libayatana-appindicator3-dev
+      - librsvg2-dev
+      - cmake
+      - autoconf
+      - automake
+      - libtool
+      - python3
+      - xz-utils
+      - patch
+    override-build: |
+      set -eu
+      export CARGO_HOME="$CRAFT_PART_BUILD/.cargo-home"
+      export RUSTUP_HOME="$CRAFT_PART_BUILD/.rustup-home"
+      tools="$CRAFT_PART_BUILD/.build-tools"
+      mkdir -p "$tools"
+      curl --fail --location --retry 3 https://sh.rustup.rs -o "$tools/rustup-init.sh"
+      sh "$tools/rustup-init.sh" -y --profile minimal --default-toolchain 1.94.1 --no-modify-path
+      case "$CRAFT_ARCH_BUILD_FOR" in
+        amd64) bun_archive=bun-linux-x64-baseline ;;
+        arm64) bun_archive=bun-linux-aarch64 ;;
+        *) echo "Unsupported build architecture: $CRAFT_ARCH_BUILD_FOR" >&2; exit 1 ;;
+      esac
+      curl --fail --location --retry 3 "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/$bun_archive.zip" -o "$tools/bun.zip"
+      unzip -oq "$tools/bun.zip" -d "$tools"
+      export PATH="$tools/$bun_archive:$CARGO_HOME/bin:$PATH"
+      bun install --frozen-lockfile
+      bun run build:native
+      CARGO_TARGET_DIR="$CRAFT_PART_BUILD/.cargo-target" cargo build --locked --release --manifest-path src-tauri/Cargo.toml
+      bun scripts/license-codecs.mjs release "$CRAFT_PART_BUILD/codec-source"
+      install -Dm755 "$CRAFT_PART_BUILD/.cargo-target/release/collage-studio" "$CRAFT_PART_INSTALL/usr/bin/collage-studio"
+      install -Dm644 packaging/linux/collage-studio.snap.desktop "$CRAFT_PART_INSTALL/usr/share/applications/collage-studio.desktop"
+      install -Dm644 public/icons/icon-512.png "$CRAFT_PART_INSTALL/meta/gui/icon.png"
+      install -Dm644 LICENSE "$CRAFT_PART_INSTALL/usr/share/licenses/collage-studio/LICENSE"
+      install -Dm644 public/third-party-notices.txt "$CRAFT_PART_INSTALL/usr/share/licenses/collage-studio/third-party-notices.txt"
+      install -Dm644 codec-source/collage-studio-codec-corresponding-source.tar.gz "$CRAFT_PART_INSTALL/usr/share/licenses/collage-studio/collage-studio-codec-corresponding-source.tar.gz"
+      install -Dm644 codec-source/collage-studio-codec-corresponding-source.tar.gz.sha256 "$CRAFT_PART_INSTALL/usr/share/licenses/collage-studio/collage-studio-codec-corresponding-source.tar.gz.sha256"
+    stage:
+      - usr/bin/collage-studio
+      - usr/share/applications/collage-studio.desktop
+      - usr/share/licenses/collage-studio/**
+      - meta/gui/icon.png

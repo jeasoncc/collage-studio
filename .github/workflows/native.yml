@@ -1,0 +1,238 @@
+name: Native mobile builds
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths: ['src/**', 'public/**', 'src-tauri/**', 'scripts/license-*', 'third_party/codecs/**', 'package.json', 'bun.lock', 'vite.config.ts', '.github/workflows/native.yml']
+  workflow_dispatch:
+    inputs:
+      sign_ios:
+        description: Build an App Store IPA using configured Apple signing secrets
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: '1.94.1'
+  BUN_VERSION: '1.4.2'
+  NDK_VERSION: '27.2.12479018'
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: Install codec source build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake autoconf automake libtool pkg-config patch xz-utils
+      - name: Install pinned Android SDK and Rust targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' "ndk;$NDK_VERSION"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          rustup target add aarch64-linux-android
+      - run: bun install --frozen-lockfile
+      - name: Initialize Android project
+        run: bun run native:android:init --ci --skip-targets-install
+      - name: Build debug APK without release credentials
+        run: bun run native:android:build --debug --apk --target aarch64 --ci
+      - name: Package debug APK with corresponding and complete source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p native-release/android-debug
+          find src-tauri/gen/android/app/build/outputs/apk -type f -path '*/debug/*.apk' -exec cp {} native-release/android-debug/ \;
+          test -n "$(find native-release/android-debug -type f -name '*.apk' -print -quit)"
+          bun scripts/license-codecs.mjs release native-release/android-debug
+          git archive --format=tar.gz --prefix=collage-studio/ HEAD --output=native-release/android-debug/collage-studio-source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk
+          path: native-release/android-debug/*
+          if-no-files-found: error
+      - name: Build and sign release APK and AAB
+        id: sign
+        if: github.event_name != 'pull_request'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -z "$ANDROID_KEYSTORE_BASE64"; then
+            echo 'Release signing is not configured; the debug APK remains available.'
+            exit 0
+          fi
+          : "${ANDROID_KEYSTORE_PASSWORD:?Set ANDROID_KEYSTORE_PASSWORD}"
+          : "${ANDROID_KEY_ALIAS:?Set ANDROID_KEY_ALIAS}"
+          : "${ANDROID_KEY_PASSWORD:?Set ANDROID_KEY_PASSWORD}"
+          keystore="$RUNNER_TEMP/collage-upload.jks"
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          bun run native:android:build --apk --aab --target aarch64 --ci
+          mkdir -p native-release/android
+          mapfile -t apks < <(find src-tauri/gen/android/app/build/outputs/apk -name '*release-unsigned.apk' -type f)
+          mapfile -t aabs < <(find src-tauri/gen/android/app/build/outputs/bundle -name '*.aab' -type f)
+          test "${#apks[@]}" -ge 1
+          test "${#aabs[@]}" -ge 1
+          tools="$ANDROID_HOME/build-tools/36.0.0"
+          for apk in "${apks[@]}"; do
+            output="native-release/android/$(basename "${apk%-unsigned.apk}").apk"
+            "$tools/zipalign" -p -f 4 "$apk" "$RUNNER_TEMP/aligned.apk"
+            "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "$ANDROID_KEY_ALIAS" --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD --out "$output" "$RUNNER_TEMP/aligned.apk"
+            "$tools/apksigner" verify "$output"
+          done
+          for aab in "${aabs[@]}"; do
+            output="native-release/android/$(basename "$aab")"
+            cp "$aab" "$output"
+            jarsigner -keystore "$keystore" -storepass:env ANDROID_KEYSTORE_PASSWORD -keypass:env ANDROID_KEY_PASSWORD "$output" "$ANDROID_KEY_ALIAS"
+            jarsigner -verify "$output"
+          done
+          bun scripts/license-codecs.mjs release native-release/android
+          git archive --format=tar.gz --prefix=collage-studio/ HEAD --output=native-release/android/collage-studio-source.tar.gz
+          echo 'signed=true' >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: steps.sign.outputs.signed == 'true'
+        with:
+          name: android-signed-release
+          path: native-release/android/*
+          if-no-files-found: error
+
+  ios-simulator:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Select pinned Xcode and Rust targets
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          rustup target add aarch64-apple-ios-sim aarch64-apple-ios
+      - name: Install codec source build dependencies
+        run: brew install autoconf automake libtool pkg-config cmake
+      - run: bun install --frozen-lockfile
+      - name: Initialize iOS project on macOS
+        run: bun run native:ios:init --ci
+      - name: Build unsigned simulator app
+        run: bun run native:ios:build --debug --target aarch64-sim --no-sign --ci
+      - name: Launch the actual iOS simulator app
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find src-tauri/gen/apple -type d -name '*.app' -not -path '*.xcarchive/*' -print -quit)
+          test -n "$app"
+          device="$(xcrun simctl list devices available --json | node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { z } from "zod";
+            const inventory = z.object({ devices: z.record(z.string(), z.array(z.object({
+              name: z.string(), udid: z.uuid(), isAvailable: z.boolean(), state: z.string()
+            }))) }).parse(JSON.parse(readFileSync(0, "utf8")));
+            const device = Object.entries(inventory.devices)
+              .filter(([runtime]) => runtime.includes(".iOS-"))
+              .sort(([left], [right]) => right.localeCompare(left, "en", { numeric: true }))
+              .flatMap(([, devices]) => devices)
+              .find(device => device.isAvailable && device.state === "Shutdown" && device.name.startsWith("iPhone"));
+            if (!device) throw new Error("No installed iPhone simulator runtime");
+            process.stdout.write(device.udid);
+          ')"
+          trap 'xcrun simctl shutdown "$device" >/dev/null 2>&1 || true' EXIT
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b
+          xcrun simctl install "$device" "$app"
+          xcrun simctl launch "$device" top.szlh.collage
+          sleep 5
+          mkdir -p native-release/ios-simulator
+          xcrun simctl io "$device" screenshot native-release/ios-simulator/ios-simulator-home.png
+      - name: Package simulator app
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find src-tauri/gen/apple -type d -name '*.app' -not -path '*.xcarchive/*' -print -quit)
+          test -n "$app"
+          mkdir -p native-release/ios-simulator
+          ditto -c -k --keepParent "$app" native-release/ios-simulator/ios-simulator.zip
+          bun scripts/license-codecs.mjs release native-release/ios-simulator
+          git archive --format=tar.gz --prefix=collage-studio/ HEAD --output=native-release/ios-simulator/collage-studio-source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator-app
+          path: native-release/ios-simulator/*
+          if-no-files-found: error
+
+  ios-signed:
+    if: github.event_name == 'workflow_dispatch' && inputs.sign_ios
+    runs-on: macos-15
+    env:
+      APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+      IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+      IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+      IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Require real signing credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${APPLE_DEVELOPMENT_TEAM:?Set APPLE_DEVELOPMENT_TEAM}"
+          : "${IOS_CERTIFICATE:?Set IOS_CERTIFICATE to the base64 Apple Distribution p12}"
+          : "${IOS_CERTIFICATE_PASSWORD:?Set IOS_CERTIFICATE_PASSWORD}"
+          : "${IOS_MOBILE_PROVISION:?Set IOS_MOBILE_PROVISION to the base64 App Store profile for top.szlh.collage}"
+          sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          rustup target add aarch64-apple-ios
+      - name: Install codec source build dependencies
+        run: brew install autoconf automake libtool pkg-config cmake
+      - run: bun install --frozen-lockfile
+      - run: bun run native:ios:init --ci
+      - name: Build signed App Store IPA
+        run: bun run native:ios:build --target aarch64 --ci --export-method app-store-connect --build-number "$GITHUB_RUN_NUMBER"
+      - name: Package signed IPA with corresponding and complete source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p native-release/ios-signed
+          find src-tauri/gen/apple -type f -name '*.ipa' -exec cp {} native-release/ios-signed/ \;
+          test -n "$(find native-release/ios-signed -type f -name '*.ipa' -print -quit)"
+          bun scripts/license-codecs.mjs release native-release/ios-signed
+          git archive --format=tar.gz --prefix=collage-studio/ HEAD --output=native-release/ios-signed/collage-studio-source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-signed-ipa
+          path: native-release/ios-signed/*
+          if-no-files-found: error
