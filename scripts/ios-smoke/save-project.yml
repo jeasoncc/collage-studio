@@ -1,11 +1,12 @@
 appId: top.szlh.collage
 ---
-- scrollUntilVisible:
-    element:
-      text: "保存可编辑项目"
-    direction: DOWN
-    centerElement: true
-    timeout: 30000
+# Scroll the dialog body, not the whole device viewport or its fixed footer.
+- swipe:
+    from:
+      text: "清晰度"
+    direction: UP
+    duration: 400
+- takeScreenshot: "07b-project-button-visible-in-export-dialog"
 - tapOn: "保存可编辑项目"
 - extendedWaitUntil:
     visible: "Cancel"
