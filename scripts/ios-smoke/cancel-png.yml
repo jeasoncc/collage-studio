@@ -7,10 +7,17 @@ appId: top.szlh.collage
     text: "再次保存图片"
     enabled: true
 - extendedWaitUntil:
-    visible: "Cancel"
+    visible: "Save"
     timeout: 30000
 - takeScreenshot: "06-native-png-cancel-picker"
-- tapOn: "Cancel"
+# iOS 26.2 labels the folder's ellipsis as "Cancel". The observed top-left
+# control is Back inside On My iPhone, then the real close/cancel X in Browse.
+- tapOn:
+    point: "9%,12%"
+- waitForAnimationToEnd
+- takeScreenshot: "06b-native-root-cancel-control"
+- tapOn:
+    point: "9%,12%"
 - extendedWaitUntil:
     notVisible: "正在保存文件"
     timeout: 10000
