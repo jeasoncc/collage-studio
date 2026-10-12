@@ -81,6 +81,15 @@
 - 支持安装的浏览器使用「安装应用」；iPhone/iPad 的 Safari 可通过「分享 → 添加到主屏幕」安装 PWA。
 - 更新已安装的 PWA：回首页点 **「更新并刷新」**。不要通过清除站点数据更新，草稿就在本机。
 
+### 原生调试产物
+
+[1.0.0 预发布](https://github.com/jeasoncc/collage-studio/releases/tag/v1.0.0) 已公开实际验收产物及精确对应源码：
+
+- [Android universal 调试 APK](https://github.com/jeasoncc/collage-studio/releases/download/v1.0.0/collage-studio-1.0.0-android-debug-universal.apk)：ARM64 + x86_64，约 506 MiB；Android Debug 签名，不是正式发行签名或 Google Play 上架。
+- [iOS ARM64 模拟器应用](https://github.com/jeasoncc/collage-studio/releases/download/v1.0.0/collage-studio-1.0.0-ios-simulator-arm64-0ecfb3b.zip)：仅用于 macOS 上的 iOS 模拟器，不是可以安装到实体 iPhone 的 IPA。
+
+源码产出提交、各平台实际重新组合材料、完整版权文本及 SHA-256 随发行附件提供；不要把后续源码标签误认为旧二进制已重新构建。Linux 仍只经 AUR / Snap Store 分发，账户授权完成前不宣称已上架。
+
 ### 本地开发
 
 需要 [Bun 1.4.2+](https://bun.sh/)、Node 22+，以及源代码编译工具：Bash、Python 3、curl、tar、gzip/xz、CMake、make、pkg-config、autoconf、automake、libtool、patch。
