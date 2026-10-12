@@ -1,6 +1,8 @@
 appId: top.szlh.collage
 ---
-- launchApp
+# Preserve the cold simctl process and its real stdout/stderr capture.
+- launchApp:
+    stopApp: false
 - extendedWaitUntil:
     visible: "开始拼图"
     timeout: 30000

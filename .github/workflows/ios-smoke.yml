@@ -77,6 +77,9 @@ jobs:
           test -n "$APP"
           plutil -p "$APP/Info.plist" > out/ios-smoke/app-info.txt
           xcrun simctl install "$DEVICE_ID" "$APP"
+          touch out/ios-smoke/launch-start.marker
+          bash scripts/ios-smoke/capture-memory.sh > out/ios-smoke/os-memory-rss.log 2>&1 &
+          printf '%s\n' "$!" > "$RUNNER_TEMP/ios-metrics.pid"
           xcrun simctl launch --stdout="$PWD/out/ios-smoke/app-stdout.txt" --stderr="$PWD/out/ios-smoke/app-stderr.txt" "$DEVICE_ID" top.szlh.collage | tee out/ios-smoke/launch.txt
       - name: Register verified official XCTest apps before execution
         run: python3 scripts/ios-smoke/install-maestro-driver.py "$RUNNER_TEMP/maestro-cli" "$RUNNER_TEMP/maestro-driver-products"
@@ -92,6 +95,34 @@ jobs:
         run: |
           maestro --device "$DEVICE_ID" test --format JUNIT --output out/ios-smoke/project-report.xml --debug-output out/ios-smoke/debug-project --test-output-dir out/ios-smoke/screenshots scripts/ios-smoke/save-project.yml
           node scripts/ios-smoke/inspect-files.mjs project
+      - name: Collect real WebKit GPU graphics pressure and new crash reports
+        if: always()
+        run: |
+          mkdir -p out/ios-smoke
+          status=0
+          if test -f "$RUNNER_TEMP/ios-metrics.pid"; then
+            pid="$(cat "$RUNNER_TEMP/ios-metrics.pid")"
+            if kill -0 "$pid" 2>/dev/null; then
+              kill "$pid"
+            else
+              printf 'Memory/RSS recorder stopped before diagnostics; inspect its raw log.\n' >&2
+              status=1
+            fi
+          fi
+          predicate='process == "拼贴时光" OR process CONTAINS[c] "WebContent" OR process CONTAINS[c] "WebKit" OR process CONTAINS[c] "GPU" OR subsystem CONTAINS[c] "WebKit" OR subsystem CONTAINS[c] "CoreGraphics" OR subsystem CONTAINS[c] "Metal" OR eventMessage CONTAINS[c] "canvas" OR eventMessage CONTAINS[c] "memory pressure" OR eventMessage CONTAINS[c] "jetsam"'
+          log show --last 30m --info --debug --style compact --predicate "$predicate" > out/ios-smoke/host-webkit-gpu-pressure.log 2>&1 || status=1
+          if test -n "${DEVICE_ID:-}"; then
+            xcrun simctl spawn "$DEVICE_ID" log show --last 30m --info --debug --style compact --predicate "$predicate" > out/ios-smoke/simulator-webkit-gpu-pressure.log 2>&1 || status=1
+            if test -f out/ios-smoke/launch-start.marker; then
+              for report_dir in "$HOME/Library/Logs/DiagnosticReports" "$SIMULATOR_DATA_ROOT/Library/Logs"; do
+                if test -d "$report_dir"; then
+                  mkdir -p "out/ios-smoke/crash-reports/$(basename "$report_dir")"
+                  find "$report_dir" -type f -newer out/ios-smoke/launch-start.marker \( -name '*.ips' -o -name '*.crash' \) -exec cp {} "out/ios-smoke/crash-reports/$(basename "$report_dir")/" \; || status=1
+                fi
+              done
+            fi
+          fi
+          exit "$status"
       - name: Capture actual simulator and tool diagnostics
         if: always()
         run: |
@@ -99,7 +130,7 @@ jobs:
           xcodebuild -version > out/ios-smoke/xcode-version.txt
           if test -n "${DEVICE_ID:-}"; then
             xcrun simctl io "$DEVICE_ID" screenshot out/ios-smoke/final-simulator-screen.png
-            xcrun simctl spawn "$DEVICE_ID" log show --last 15m --style compact --predicate 'process == "拼贴时光"' > out/ios-smoke/runtime.log
+            xcrun simctl spawn "$DEVICE_ID" log show --last 30m --style compact --predicate 'process == "拼贴时光"' > out/ios-smoke/runtime.log
             node --input-type=module <<'NODE'
           import fs from 'node:fs';
           import { spawnSync } from 'node:child_process';
