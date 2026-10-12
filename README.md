@@ -63,7 +63,7 @@
 <p align="center">
   <img src="docs/images/android-emulator.webp" width="270" alt="Android 36 x86_64 模拟器中实际安装并运行的 Tauri 应用首页" />
   <img src="docs/images/ios-simulator.webp" width="270" alt="macOS CI 中实际安装并持续运行的 iOS 26.2 模拟器应用首页" />
-  <br /><sub>左：Android 36 模拟器，调试签名 APK，系统文件选择器保存 PNG 已验收。右：iOS 26.2 模拟器，实际编译、安装、持续运行及首页绘制已验收；无签名真机 IPA。两图都不是浏览器移动视口或商店上架证明。</sub>
+  <br /><sub>左：Android 36 模拟器，调试签名 APK，系统文件选择器保存 PNG 已验收。右：iOS 26.2 模拟器，实际编译、安装、持续运行、系统「文件」保存 PNG / 可编辑工程及取消均已验收；无签名真机 IPA。两图都不是浏览器移动视口或商店上架证明。</sub>
 </p>
 
 <p align="center">
@@ -181,9 +181,11 @@ bun run native:ios:build --debug --target aarch64-sim --no-sign --ci
 
 最后一条生成模拟器应用，不是可以装到 iPhone 的 IPA。真机/发行构建需要自己的 Apple 团队、证书及描述文件；CI 的签名流程只在显式提供这些条件时运行。没有伪造团队 ID、证书或商店发布状态。
 
-构建与签名流程见 [native.yml](.github/workflows/native.yml)。模拟器验收检查应用进程存活，并保留应用、生成的 Xcode 工程、SDK 信息及启动/崩溃日志；构建通过或截到系统桌面不算应用运行通过。平台工程支持不等于实体手机验收。
+构建与签名流程见 [native.yml](.github/workflows/native.yml)，按需手动执行；原生源码相关 PR 仍触发构建，发布已有验收产物的标签不会无谓重编同一媒体库。模拟器验收检查应用进程存活，并保留应用、生成的 Xcode 工程、SDK 信息及启动/崩溃日志；构建通过或截到系统桌面不算应用运行通过。平台工程支持不等于实体手机验收。
 
 当前保留官方 Wry 0.57.0 的完整源码与双许可证，仅修正 WebKit 框架 Bundle 查询，避免 iOS 26.2 启动时的 `CFRelease(NULL)` 崩溃；使用实际 `WKWebView` 类所属 Bundle，不屏蔽异常或返回假版本。精确来源、原始归档 SHA-256 与本地修改见 [`collage-origin.json`](src-tauri/vendor/wry/collage-origin.json)。[真实模拟器验收](https://github.com/jeasoncc/collage-studio/actions/runs/38229087642/job/114743819057)包含实际应用截图与进程存活检查。
+
+[系统「文件」端到端验收](https://github.com/jeasoncc/collage-studio/actions/runs/38256389130/job/114835461935)复用上述实际编译的应用，不重新编译：保存 2160×2700 / 4,661,622 字节 PNG；再次保存后取消，原文件路径、字节、SHA-256 与修改时间均未变且无错误成功提示；保存 120,893 字节 `.collage`，真实 ZIP CRC、编辑清单和三张原始 WebP 的 SHA-256 均通过，所有阶段临时导出文件清空。模拟器产物、对应应用源码与媒体重新组合材料保持各自产出提交，不冒充由后续文档/验收提交重新构建。
 
 ## Linux 分发
 
@@ -259,6 +261,8 @@ sudo snap connect collage-studio:removable-media
 | 字体 | 内置字体自托管；系统字体/回退字体跨设备不保证逐像素一致 |
 
 现有回归覆盖照片分区与容量、密集海报与主图切换、裁剪与样式、撤销/恢复、项目校验及导入保存。浏览器移动视口不是实体手机；源码/CI 支持也不是商店审核或真机安装证明。未实际运行的平台、系统键盘、系统分享和相册保存不能据此宣称已验证。
+
+iOS 模拟器在一次[较早验收](https://github.com/jeasoncc/collage-studio/actions/runs/38245326854)中真实发生过 `林海.webp` 的 `canvas.toBlob()` 编码失败。原因尚未确定；后续完整成功不等于已修复该次故障。没有删除示例、重试导入或改用假结果；原始失败证据与后续 WebKit / GPU / 内存诊断保留在 CI 产物中。
 
 ## 技术结构
 
