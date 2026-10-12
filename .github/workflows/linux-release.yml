@@ -1,8 +1,6 @@
 name: Linux release
 
 on:
-  push:
-    tags: ['v1.0.0']
   workflow_dispatch:
     inputs:
       publish_snap:
@@ -22,6 +20,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: bun install --frozen-lockfile
       - name: Require the versioned source tag
         shell: bash
         run: |
@@ -30,7 +32,7 @@ jobs:
             echo 'Run this workflow on the v1.0.0 tag, not a branch.' >&2
             exit 1
           fi
-          node --input-type=module -e "import fs from 'node:fs'; const p=JSON.parse(fs.readFileSync('package.json')); if(p.version !== '1.0.0') throw new Error('Package and tag versions differ')"
+          bun --eval "import {readFileSync} from 'node:fs'; import {z} from 'zod'; z.object({version:z.literal('1.0.0')}).parse(JSON.parse(readFileSync('package.json','utf8')));"
           mkdir -p out
           git archive --format=tar.gz --prefix=collage-studio-1.0.0/ HEAD > out/collage-studio-1.0.0.tar.gz
           (cd out && sha256sum collage-studio-1.0.0.tar.gz > collage-studio-1.0.0.tar.gz.sha256)
@@ -45,11 +47,27 @@ jobs:
   snap:
     needs: source
     runs-on: ubuntu-24.04
+    environment: snap-store
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: source-release
           path: source-archive
+      # The owner must first register the exact name. Export expiring credentials
+      # restricted to collage-studio, stable, and package_push/package_release:
+      # snapcraft export-login --snaps=collage-studio --channels=stable \
+      #   --acls=package_push,package_release --expires=<ISO-8601> <private-file>
+      # Store the file content only in this protected Environment's secret.
+      - name: Require genuine Store credentials
+        if: inputs.publish_snap
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        run: |
+          if [[ -z "$SNAPCRAFT_STORE_CREDENTIALS" ]]; then
+            echo 'Register collage-studio with the Snap Store and configure expiring, name/channel/ACL-restricted SNAPCRAFT_STORE_CREDENTIALS in the protected snap-store GitHub Environment.' >&2
+            exit 1
+          fi
       - name: Unpack and retain the exact complete source release
         run: |
           (cd source-archive && sha256sum -c collage-studio-1.0.0.tar.gz.sha256)
@@ -80,22 +98,9 @@ jobs:
           name: linux-source-materials
           path: out/*.tar.gz*
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        with:
-          name: snap-package
-          path: ${{ steps.snapcraft.outputs.snap }}
-          if-no-files-found: error
-
-  snap-runtime:
-    needs: snap
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: snap-package
-          path: out
       - name: Require strict host confinement and install the real package
+        env:
+          SNAP_PATH: ${{ steps.snapcraft.outputs.snap }}
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -104,7 +109,7 @@ jobs:
           sudo loginctl enable-linger "$(id -un)"
           sudo systemctl start "user@$(id -u).service"
           test "$(snap debug confinement)" = strict
-          sudo snap install --dangerous out/*.snap
+          sudo snap install --dangerous "$SNAP_PATH"
           snap connections collage-studio
       - name: Launch the sandboxed GNOME desktop application
         # Xvfb has no DRI3/DMA-BUF display. This is test-only rendering setup,
@@ -120,8 +125,22 @@ jobs:
           path: evidence
           if-no-files-found: warn
 
+      - name: Install Snapcraft
+        if: inputs.publish_snap
+        run: sudo snap install snapcraft --classic
+      - name: Upload and release the actual package to stable
+        if: inputs.publish_snap
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+          SNAP_PATH: ${{ steps.snapcraft.outputs.snap }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$SNAP_PATH"
+          snapcraft upload "$SNAP_PATH" --release=stable
+
   release:
-    needs: [source, snap, snap-runtime]
+    needs: [source, snap]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -130,6 +149,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: bun install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:
           name: source-release
@@ -138,11 +161,7 @@ jobs:
         with:
           name: linux-source-materials
           path: out
-      - uses: actions/download-artifact@v4
-        with:
-          name: snap-package
-          path: out
-      - name: Publish complete source, corresponding source, and the Snap
+      - name: Publish complete source and corresponding source only
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -152,7 +171,7 @@ jobs:
           if ! gh release view v1.0.0 >/dev/null 2>&1; then
             gh release create v1.0.0 --verify-tag --title '拼贴时光 1.0.0' --generate-notes
           fi
-          gh release upload v1.0.0 out/*.tar.gz out/*.sha256 out/*.snap --clobber
+          gh release upload v1.0.0 out/*.tar.gz out/*.sha256 --clobber
       - name: Generate checksum-backed AUR materials from the public source asset
         env:
           RELEASE_REPOSITORY: ${{ github.repository }}
@@ -165,7 +184,7 @@ jobs:
         run: |
           set -euo pipefail
           tar -C out/aur -czf out/collage-studio-1.0.0-aur.tar.gz collage-studio
-          (cd out && sha256sum *.tar.gz *.snap > SHA256SUMS)
+          (cd out && sha256sum *.tar.gz > SHA256SUMS)
           gh release upload v1.0.0 out/collage-studio-1.0.0-aur.tar.gz out/SHA256SUMS --clobber
       - uses: actions/upload-artifact@v4
         with:
@@ -174,37 +193,3 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
-  snap-store:
-    needs: [snap, release]
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_snap
-    runs-on: ubuntu-24.04
-    environment: snap-store
-    steps:
-      # The owner must first register the exact name. Export expiring credentials
-      # restricted to collage-studio, stable, and package_push/package_release:
-      # snapcraft export-login --snaps=collage-studio --channels=stable \
-      #   --acls=package_push,package_release --expires=<ISO-8601> <private-file>
-      # Store the file content only in this protected Environment's secret.
-      - name: Require genuine Store credentials
-        env:
-          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
-        run: |
-          if [[ -z "$SNAPCRAFT_STORE_CREDENTIALS" ]]; then
-            echo 'Register collage-studio with the Snap Store and configure expiring, name/channel/ACL-restricted SNAPCRAFT_STORE_CREDENTIALS in the protected snap-store GitHub Environment.' >&2
-            exit 1
-          fi
-      - uses: actions/download-artifact@v4
-        with:
-          name: snap-package
-          path: out
-      - name: Install Snapcraft
-        run: sudo snap install snapcraft --classic
-      - name: Upload and release the actual package to stable
-        env:
-          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          packages=(out/*.snap)
-          [[ ${#packages[@]} == 1 && -f "${packages[0]}" ]]
-          snapcraft upload "${packages[0]}" --release=stable

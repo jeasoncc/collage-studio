@@ -191,7 +191,7 @@ bun run native:ios:build --debug --target aarch64-sim --no-sign --ci
 
 ### AUR / yay
 
-[Linux 发布流程](.github/workflows/linux-release.yml) 从 `v1.0.0` 标签产生完整源码归档、对应源码材料、Snap 和带真实 SHA-256 的 AUR 材料；Linux 构建产物不另设下载渠道。
+[Linux 发布流程](.github/workflows/linux-release.yml) 必须在 `v1.0.0` 标签上手动触发。Snap 构包、严格隔离运行验收与可选 Store 上传在同一受保护任务中完成；`.snap` 不上传为 Actions 产物或 GitHub Release 下载。公开发行资产只包含完整源码、对应源码、许可材料及带真实 SHA-256 的 AUR 材料，正式 Snap 只经 Snap Store 分发。
 
 `generate-aur.mjs` 的必填参数是**实际公开仓库的 `OWNER/REPO`**，不是 URL；默认下载并验证真实 `v1.0.0` 源码发布资产。`--commit FULL_SHA` 仅显式验证固定的公开源码快照，不会自动回退、伪造 release 或发布 AUR。
 
@@ -234,7 +234,7 @@ sudo snap install --dangerous out/snap/collage-studio_1.0.0_amd64.snap
 sudo snap connect collage-studio:removable-media
 ```
 
-正式上传需要 Ubuntu One/Snap Store 开发者账户及 `collage-studio` 名称所有权。发布流程使用受保护的 `snap-store` GitHub Environment、显式手动输入及 `SNAPCRAFT_STORE_CREDENTIALS`；凭证应限制为 `--snaps=collage-studio --channels=stable --acls=package_push,package_release` 并设置有效期。构包无需商店登录；未配置真实凭据时不会伪造上传成功。
+正式上传需要 Ubuntu One/Snap Store 开发者账户及 `collage-studio` 名称所有权。Snap CI 任务须通过受保护的 `snap-store` GitHub Environment 审核；只有显式勾选 `publish_snap` 且提供 `SNAPCRAFT_STORE_CREDENTIALS` 才上传 stable。凭证应限制为 `--snaps=collage-studio --channels=stable --acls=package_push,package_release` 并设置有效期。构包无需商店登录；未配置真实凭据时不会伪造上传成功。
 
 ## 本地数据与隐私
 
