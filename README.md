@@ -60,6 +60,11 @@
 
 真实在线 Web/PWA 截图，移动图为 390px 浏览器视口。不是设计稿，也不冒充 Android/iOS 真机或已构建的原生应用截图。
 
+<p align="center">
+  <img src="docs/images/android-emulator.webp" width="270" alt="Android 36 x86_64 模拟器中实际安装并运行的 Tauri 应用首页" />
+  <br /><sub>实际 Android 36 模拟器：调试签名 APK，内嵌前端；已通过系统文件选择器保存 PNG。不是实体手机或商店上架证明。</sub>
+</p>
+
 ## 快速开始
 
 ### 直接使用
@@ -159,7 +164,7 @@ bun run native:android:build --apk --aab --target aarch64 --ci
 
 ### iOS
 
-**需要 macOS、完整 Xcode 与 iOS SDK；不能在 Linux 上完成 iOS 原生构建。** 应用最低 iOS **16.4**，与内嵌 AAC/ONNX 的 WebAssembly SIMD 能力一致。CI 固定使用 Xcode 26.3 / iOS 26.2 SDK，满足 [Apple 当前要求](https://developer.apple.com/news/upcoming-requirements/)的 Xcode 26+ 与 iOS 26 SDK+；最低运行版本与构建 SDK 版本是两回事。
+**需要 macOS、完整 Xcode 与 iOS SDK；不能在 Linux 上完成 iOS 原生构建。** 应用最低 iOS **17.4**：除 WebAssembly SIMD 外，编辑器还使用 [`Promise.withResolvers()`](https://github.com/mdn/browser-compat-data/blob/main/javascript/builtins/Promise.json)，iOS 16.4 不具备此 API。CI 固定使用 Xcode 26.3 / iOS 26.2 SDK，满足 [Apple 当前要求](https://developer.apple.com/news/upcoming-requirements/)的 Xcode 26+ 与 iOS 26 SDK+；最低运行版本与构建 SDK 版本是两回事。
 
 ```sh
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim
@@ -170,7 +175,7 @@ bun run native:ios:build --debug --target aarch64-sim --no-sign --ci
 
 最后一条生成模拟器应用，不是可以装到 iPhone 的 IPA。真机/发行构建需要自己的 Apple 团队、证书及描述文件；CI 的签名流程只在显式提供这些条件时运行。没有伪造团队 ID、证书或商店发布状态。
 
-构建与签名流程见 [native.yml](.github/workflows/native.yml)。平台工程支持不等于实体手机验收；具体运行边界见下文。
+构建与签名流程见 [native.yml](.github/workflows/native.yml)。模拟器验收检查应用进程存活，并保留应用、生成的 Xcode 工程、SDK 信息及启动/崩溃日志；构建通过或截到系统桌面不算应用运行通过。平台工程支持不等于实体手机验收。
 
 ## Linux 分发
 
@@ -180,13 +185,14 @@ bun run native:ios:build --debug --target aarch64-sim --no-sign --ci
 
 [Linux 发布流程](.github/workflows/linux-release.yml) 从 `v1.0.0` 标签产生完整源码归档、对应源码材料、Snap 和带真实 SHA-256 的 AUR 材料；Linux 构建产物不另设下载渠道。
 
-`generate-aur.mjs` 的必填参数是**实际公开仓库的 `OWNER/REPO`**，不是 URL；它必须能下载该仓库的真实源码发布资产。运行方式与错误说明：
+`generate-aur.mjs` 的必填参数是**实际公开仓库的 `OWNER/REPO`**，不是 URL；默认下载并验证真实 `v1.0.0` 源码发布资产。`--commit FULL_SHA` 仅显式验证固定的公开源码快照，不会自动回退、伪造 release 或发布 AUR。
 
 ```sh
+node scripts/generate-aur.mjs jeasoncc/collage-studio
 node scripts/generate-aur.mjs --help
 ```
 
-生成目录为 `packaging/aur/collage-studio/`，包含 `PKGBUILD`、`.SRCINFO` 和归档 SHA-256。可先审阅并在本机安装：
+生成目录为 `packaging/aur/collage-studio/`，包含 `PKGBUILD`、`.SRCINFO` 和归档 SHA-256；生成物不提交到应用源码仓库，而提交到独立的 AUR 包仓库。可先审阅并在本机安装：
 
 ```sh
 cd packaging/aur/collage-studio
@@ -199,7 +205,7 @@ yay -Bi .
 yay -S collage-studio
 ```
 
-源码构建使用冻结的 Bun/Cargo 依赖；安装包含可执行文件、桌面启动器、图标与许可。不要将源码校验改为 `SKIP`。
+源码构建使用冻结的 Bun/Cargo 依赖，并重新构建固定的 HEIC/AAC 源码；启用 Tauri `custom-protocol` 内嵌前端，不连接开发服务器。安装包含可执行文件、桌面启动器、图标、许可，以及本次构建对应的完整应用源码和 codec 重链接材料。不要将源码校验改为 `SKIP`。
 
 ### Snap Store
 
@@ -218,7 +224,7 @@ sudo snap install --dangerous out/snap/collage-studio_1.0.0_amd64.snap
 sudo snap connect collage-studio:removable-media
 ```
 
-正式上传需要 Ubuntu One/Snap Store 开发者账户和应用名所有权。发布流程通过 `snap-store` GitHub Environment、受限的 `SNAPCRAFT_STORE_CREDENTIALS` 与显式手动输入控制，未配置凭据时不会伪造上传成功。
+正式上传需要 Ubuntu One/Snap Store 开发者账户及 `collage-studio` 名称所有权。发布流程使用受保护的 `snap-store` GitHub Environment、显式手动输入及 `SNAPCRAFT_STORE_CREDENTIALS`；凭证应限制为 `--snaps=collage-studio --channels=stable --acls=package_push,package_release` 并设置有效期。构包无需商店登录；未配置真实凭据时不会伪造上传成功。
 
 ## 本地数据与隐私
 

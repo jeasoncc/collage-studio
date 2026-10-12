@@ -35,6 +35,7 @@ function storedAssets(project: EditorProject, assets: Record<string, MediaAsset>
 }
 async function hydrate(project: EditorProject, stored: StoredAsset[]): Promise<{ project: EditorProject; assets: MediaAsset[] }> {
   const assets: MediaAsset[] = [];
+  const detachStoredBlobs = navigator.userAgent.includes('AppleWebKit') && !navigator.userAgent.includes('Chrome/') && !navigator.userAgent.includes('Chromium/');
   try {
     if (!Array.isArray(stored) || stored.length > 2000) throw new Error('草稿素材列表损坏，请导入备份项目。');
     let total = 0;
@@ -47,7 +48,10 @@ async function hydrate(project: EditorProject, stored: StoredAsset[]): Promise<{
     });
     validateReferences(project, validated.map(item => item.metadata));
     for (const { metadata, blob } of validated) {
-      const asset = await createAsset(blob.type === metadata.mime ? blob : new Blob([blob], { type: metadata.mime }), metadata.name, metadata.kind);
+      // Detach WebKit's stored blob handles before editing and replacing the draft record.
+      // Retain independent bytes for this editable session; other engines keep zero-copy blobs.
+      const original = detachStoredBlobs ? new Blob([await blob.arrayBuffer()], { type: metadata.mime }) : blob;
+      const asset = await createAsset(original.type === metadata.mime ? original : new Blob([original], { type: metadata.mime }), metadata.name, metadata.kind);
       assets.push(asset);
       if (asset.width !== metadata.width || asset.height !== metadata.height || Math.abs(asset.duration - metadata.duration) > 0.25) throw new Error(`素材“${metadata.name}”与项目记录不一致，请重新导出。`);
       // Keep the original identity and editable metadata while retaining freshly decoded runtime resources.

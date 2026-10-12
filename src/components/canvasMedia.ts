@@ -1,5 +1,6 @@
 import Konva from 'konva';
 import type { MediaAsset } from '../types';
+import { imagePreviewSource } from '../services/media';
 
 export interface CanvasMedia {
   src: string;
@@ -9,6 +10,7 @@ export interface CanvasMedia {
 }
 
 export function loadCanvasMedia(asset: MediaAsset): CanvasMedia {
+  const src = asset.kind === 'video' ? asset.src : imagePreviewSource(asset);
   const source = asset.kind === 'video' ? document.createElement('video') : new Image();
   let cleanup = () => {};
   let cancelLoad = () => {};
@@ -33,10 +35,10 @@ export function loadCanvasMedia(asset: MediaAsset): CanvasMedia {
       source.decoding = 'async';
       source.addEventListener('load', done, { once: true });
     }
-    source.src = asset.src;
+    source.src = src;
     if (source instanceof HTMLVideoElement) source.load();
   });
-  return { src: asset.src, source, ready, dispose: () => {
+  return { src, source, ready, dispose: () => {
     cancelLoad();
     if (source instanceof HTMLVideoElement) { source.pause(); source.removeAttribute('src'); source.load(); }
     else source.src = '';

@@ -23,3 +23,6 @@ third_party/codecs/generated/*.js
 third_party/codecs/aac/build/
 third_party/codecs/relink/
 third_party/codecs/build-receipt.json
+packaging/aur/collage-studio/
+src-tauri/plugins/native-save/android/.tauri/
+src-tauri/plugins/native-save/android/build/

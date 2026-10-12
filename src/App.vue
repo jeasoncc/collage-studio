@@ -235,11 +235,11 @@ const activeToolIndex = computed(() => toolIndex.value < 0 ? toolItems.length : 
 const extraTools: Array<{ id: PanelName; label: string; icon: Component }> = [
   { id: 'spacing', label: '留白与圆角', icon: SlidersHorizontal }, { id: 'looks', label: '照片风格', icon: Palette },
   { id: 'templates', label: '设计模板', icon: LayoutTemplate },
-  { id: 'stickers', label: '贴纸装饰', icon: Sticker }, { id: 'draw', label: '涂鸦与形状', icon: Brush },
+  { id: 'stickers', label: '贴纸装饰', icon: Sticker }, { id: 'draw', label: '形状与涂鸦', icon: Brush },
   { id: 'layers', label: '图层管理', icon: Layers }, { id: 'animation', label: '动画效果', icon: Sparkles },
   { id: 'audio', label: '背景音乐', icon: Music2 },
 ];
-const panelTitles: Record<PanelName, string> = { photos: '照片', layouts: '构图与海报', spacing: '留白 · 间距 · 圆角', looks: '照片风格', background: '画布', templates: '设计模板', text: '文字', stickers: '贴纸', draw: '涂鸦与形状', layers: '图层', animation: '动画', audio: '音乐' };
+const panelTitles: Record<PanelName, string> = { photos: '照片', layouts: '构图与海报', spacing: '留白 · 间距 · 圆角', looks: '照片风格', background: '画布', templates: '设计模板', text: '文字', stickers: '贴纸', draw: '形状与涂鸦', layers: '图层', animation: '动画', audio: '音乐' };
 const panelTitle = computed(() => panelTitles[panel.value]);
 const photoCount = computed(() => placedPhotos.value.length);
 const motionFormats: Partial<Record<ExportOptions['format'], true>> = { gif: true, mp4: true, webm: true };
@@ -274,6 +274,10 @@ function choosePanel(id: PanelName) {
   } else { advancedOpen.value = true; panelOpen.value = false; }
   panel.value = id;
   if (id !== 'draw') tool.value = 'select';
+}
+function openShapeEditor() {
+  tool.value = 'select';
+  choosePanel('draw');
 }
 function applyLook(look: CollageLook) {
   store.applyLook(look);
@@ -680,7 +684,7 @@ async function applyPanelAction(action: PanelAction) {
       }
       case 'selection': store.select(action.selection); break;
       case 'editText': openText(action.id); break;
-      case 'addShape': store.addShape(action.shape); advancedOpen.value = false; break;
+      case 'addShape': store.addShape(action.shape); tool.value = 'select'; cropMode.value = false; advancedOpen.value = false; break;
       case 'backgroundAsset': store.updateDocument({ background: { ...doc.value.background, assetId: action.assetId } }); break;
       case 'remove': store.deleteSelected(); break;
       case 'duplicate': store.duplicateSelected(); break;
@@ -977,6 +981,7 @@ onBeforeUnmount(() => {
             <button v-if="canAdjustPhoto" @click="store.selectedAsset?.kind === 'image' ? beginInlineCrop(store.selection) : beginCrop(store.selection)"><Move :size="16" />取景</button>
             <button v-if="canAdjustPhoto" @click="openPhotoText"><Type :size="16" />加字</button>
             <template v-if="store.selected?.type === 'text'"><button :disabled="store.selected.locked" @click="openText(store.selected.id)"><Type :size="16" />改文字</button><button @click="openPhotoText"><Palette :size="16" />字样</button></template>
+            <template v-if="store.selected?.type === 'shape'"><button @click="openShapeEditor"><Palette :size="16" />编辑形状</button><button :disabled="store.selected.locked" aria-label="删除所选形状，可撤销" @click="handleAction({ type: 'remove' })"><Trash2 :size="16" />删除</button></template>
             <button aria-label="更多所选元素操作" @click="selectionActionsOpen = true"><MoreHorizontal :size="18" />更多</button>
             <button class="selection-done" @click="store.select(null)">完成</button>
           </template>
@@ -1000,6 +1005,7 @@ onBeforeUnmount(() => {
       <button v-if="hasImageSelection && !store.selected?.locked" @click="selectionAction(() => uploadPhotos(true))"><ImagePlus :size="21" /><span>替换照片</span></button>
       <button v-if="canAdjustPhoto && store.selectedSlot && photoCount > 1" @click="selectionAction(() => handleAction({ type: 'swap' }))"><Rows3 :size="21" /><span>交换照片位置</span></button>
       <button v-if="canAdjustPhoto && posterComposition && photoCount >= 2" @click="selectionAction(() => { if (store.selection) handleAction({ type: 'mainPhoto', target: store.selection }); })"><Users :size="21" /><span>设为海报主图</span></button>
+      <button v-if="store.selected?.type === 'shape'" @click="selectionAction(openShapeEditor)"><Palette :size="21" /><span>编辑形状 · 颜色与大小</span></button>
       <button v-if="store.selected" :disabled="store.selected.locked" @click="selectionAction(() => store.duplicateSelected())"><Copy :size="21" /><span>复制元素</span></button>
       <button class="destructive-action" :disabled="store.selected?.locked" @click="selectionAction(() => store.deleteSelected())"><Trash2 :size="21" /><span>删除所选{{ hasImageSelection ? '照片' : '元素' }}</span><small>可撤销</small></button>
     </div>

@@ -15,6 +15,7 @@ import PhotoTextTools from './PhotoTextTools.vue';
 import AppSelect from './AppSelect.vue';
 import ColorPicker from './ColorPicker.vue';
 import PhotoSpacingControls from './PhotoSpacingControls.vue';
+import ShapeControls from './ShapeControls.vue';
 
 const props = defineProps<{ panel: PanelName; document: EditorDocument; assets: Record<string, MediaAsset>; selection: Selection; tool: EditorTool; brushColor: string; brushSize: number; highlighter: boolean; cropMode: boolean; textPending: boolean }>();
 const textDraft = defineModel<string>('textDraft', { required: true });
@@ -55,7 +56,7 @@ function changePhotoCount(value: string | number) {
   const layout = layoutsForCount(count)[0];
   if (layout) act({ type: 'layout', layout });
 }
-const titles: Record<PanelName, string> = { photos: '照片', layouts: '照片布局', spacing: '留白 · 间距 · 圆角', looks: '拼图风格', templates: '设计模板', background: '背景配色', text: '文字与字体', stickers: '贴纸盒', draw: '涂鸦与形状', layers: '图层管理', animation: '动态效果', audio: '背景音乐' };
+const titles: Record<PanelName, string> = { photos: '照片', layouts: '照片布局', spacing: '留白 · 间距 · 圆角', looks: '拼图风格', templates: '设计模板', background: '背景配色', text: '文字与字体', stickers: '贴纸盒', draw: '形状与涂鸦', layers: '图层管理', animation: '动态效果', audio: '背景音乐' };
 const shapes: { value: ImageShape; label: string }[] = [{ value: 'rect', label: '矩形' }, { value: 'circle', label: '圆形' }, { value: 'heart', label: '爱心' }, { value: 'star', label: '星形' }];
 const patterns: { value: PatternKind; label: string }[] = [{ value: 'none', label: '纯色' }, { value: 'dots', label: '波点' }, { value: 'grid', label: '细网格' }, { value: 'stripes', label: '条纹' }, { value: 'paper', label: '纸纹' }, { value: 'checker', label: '棋盘格' }];
 const animations: { value: AnimationKind; label: string }[] = [{ value: 'none', label: '无动画' }, { value: 'float', label: '轻轻漂浮' }, { value: 'pulse', label: '呼吸缩放' }, { value: 'wiggle', label: '左右摇摆' }, { value: 'pop', label: '弹跳' }, { value: 'fade', label: '渐隐渐现' }];
@@ -191,19 +192,28 @@ function patchAudio(patch: Partial<NonNullable<EditorDocument['audio']>>, commit
     <template v-else-if="panel === 'stickers'"><StickerGallery @select="sticker => act({ type: 'sticker', sticker })" /><p class="hint">选中画布上的贴纸后，可在图层与动态面板调整透明度、顺序和动画。</p></template>
 
     <template v-else-if="panel === 'draw'">
+      <section class="tool-section"><h3>添加形状</h3>
+        <button type="button" class="primary wide" @click="act({ type: 'addShape', shape: 'rect' })"><Shapes :size="17" aria-hidden="true" />＋ 添加矩形</button>
+        <div class="chips" role="group" aria-label="添加其他形状"><button v-for="shape in shapes.filter(item => item.value !== 'rect')" :key="shape.value" type="button" @click="act({ type: 'addShape', shape: shape.value })"><Shapes :size="15" aria-hidden="true" />添加{{ shape.label }}</button></div>
+        <p class="hint">添加后自动回到选择模式。被照片遮住的装饰，可在「更多 → 图层管理」中选择。</p>
+      </section>
+      <section v-if="selectedShape" class="tool-section"><ShapeControls :key="selectedShape.id" :shape="selectedShape" :canvas-width="document.width" :canvas-height="document.height" :fill-color="brushColor" @action="act" /></section>
+      <p v-else class="hint">选择画布上的形状，可修改填充、描边、大小、不透明度或删除。</p>
+      <h3>自由涂鸦</h3>
       <div class="segmented" aria-label="绘画工具"><button type="button" :aria-pressed="tool === 'draw' && !highlighter" @click="chooseBrush('pen')"><Pencil :size="15" aria-hidden="true" />画笔</button><button type="button" :aria-pressed="tool === 'draw' && highlighter" @click="chooseBrush('highlighter')">荧光笔</button><button type="button" :aria-pressed="tool === 'erase'" @click="chooseBrush('eraser')">橡皮擦</button></div>
       <p class="hint">橡皮擦会使下方画布内容透明（包括照片显示区域），不修改素材原图。普通拼图建议使用替换、删除或裁切。</p>
       <PanelRange label="画笔大小" :value="brushSize" :min="1" :max="100" unit="px" @input="value => act({ type: 'brush', size: value })" @commit="checkpoint" />
       <ColorPicker label="画笔颜色" :value="brushColor" @input="value => act({ type: 'brush', color: value })" @commit="checkpoint" />
       <button type="button" class="primary wide" @click="act({ type: 'tool', tool: 'select' })"><Check :size="16" aria-hidden="true" />完成绘画，回到选择</button>
-      <section class="tool-section"><h3>添加简单形状</h3><div class="chips"><button v-for="shape in shapes" :key="shape.value" type="button" @click="act({ type: 'addShape', shape: shape.value })"><Shapes :size="15" aria-hidden="true" />{{ shape.label }}</button></div>
-        <template v-if="selectedShape"><h4>所选形状</h4><ColorPicker label="形状填充颜色" :value="selectedShape.fill" allow-transparent @input="value => patchElement({ fill: value }, false)" @commit="checkpoint" /><label class="check-field"><input type="checkbox" :checked="selectedShape.fill === 'transparent'" @change="event => patchElement({ fill: checked(event) ? 'transparent' : brushColor })" />空心形状</label><ColorPicker label="形状描边颜色" :value="selectedShape.stroke" @input="value => patchElement({ stroke: value }, false)" @commit="checkpoint" /><PanelRange label="形状描边宽度" :value="selectedShape.strokeWidth" :min="0" :max="40" unit="px" @input="value => patchElement({ strokeWidth: value }, false)" @commit="checkpoint" /></template>
-        <template v-if="selectedDrawing"><h4>所选涂鸦</h4><ColorPicker label="涂鸦颜色" :value="selectedDrawing.color" @input="value => patchElement({ color: value }, false)" @commit="checkpoint" /><PanelRange label="涂鸦线宽" :value="selectedDrawing.strokeWidth" :min="1" :max="100" unit="px" @input="value => patchElement({ strokeWidth: value }, false)" @commit="checkpoint" /></template>
+      <section v-if="selectedDrawing" class="tool-section"><h3>所选涂鸦</h3>
+        <p v-if="selectedDrawing.locked" class="hint">涂鸦已锁定，请在「图层管理」中解锁后编辑。</p>
+        <ColorPicker label="涂鸦颜色" :value="selectedDrawing.color" :disabled="selectedDrawing.locked" @input="value => patchElement({ color: value }, false)" @commit="checkpoint" />
+        <PanelRange label="涂鸦线宽" :value="selectedDrawing.strokeWidth" :disabled="selectedDrawing.locked" :min="1" :max="100" unit="px" @input="value => patchElement({ strokeWidth: value }, false)" @commit="checkpoint" />
       </section>
     </template>
 
     <template v-else-if="panel === 'layers'">
-      <p class="hint">上方图层显示在最前面。点选后可锁定、隐藏或调整顺序；隐藏图层不参与导出。</p>
+      <p class="hint">上方图层显示在最前面。被照片遮住的矩形等装饰，也可在这里点选并编辑颜色、大小或删除；隐藏图层不参与导出。</p>
       <div v-if="layerElements.length || document.mode === 'grid'" class="layer-list" aria-label="画布图层">
         <div v-for="element in layerElements" :key="element.id" class="layer-row" :class="{ selected: selection?.kind === 'element' && selection.id === element.id, hidden: !element.visible }">
           <button type="button" class="layer-select" :aria-pressed="selection?.kind === 'element' && selection.id === element.id" :aria-label="`选择${layerKind(element)}图层：${layerName(element)}${element.locked ? '，已锁定' : ''}${!element.visible ? '，已隐藏' : ''}`" @click="act({ type: 'select', id: element.id })">
@@ -225,6 +235,7 @@ function patchAudio(patch: Partial<NonNullable<EditorDocument['audio']>>, commit
           <button type="button" :disabled="selectedElement.locked" :aria-pressed="!selectedElement.visible" @click="patchElement({ visible: !selectedElement.visible })"><Eye v-if="selectedElement.visible" :size="16" aria-hidden="true" /><EyeOff v-else :size="16" aria-hidden="true" />{{ selectedElement.visible ? '隐藏图层' : '显示图层' }}</button>
         </div>
         <p v-if="selectedElement.locked" class="hint">已锁定，解锁后可调整；仍可复制为一个新图层。</p>
+        <ShapeControls v-if="selectedShape" :key="selectedShape.id" :shape="selectedShape" :canvas-width="document.width" :canvas-height="document.height" :fill-color="brushColor" @action="act" />
         <h4>叠放顺序</h4>
         <div class="button-row"><button type="button" :disabled="selectedElement.locked || selectedLayerIndex === document.elements.length - 1" @click="act({ type: 'layer', direction: 'up' })"><ArrowUp :size="15" aria-hidden="true" />上移一层</button><button type="button" :disabled="selectedElement.locked || selectedLayerIndex === 0" @click="act({ type: 'layer', direction: 'down' })"><ArrowDown :size="15" aria-hidden="true" />下移一层</button></div>
         <div class="button-row"><button type="button" :disabled="selectedElement.locked || selectedLayerIndex === document.elements.length - 1" @click="act({ type: 'layer', direction: 'front' })"><MoveUp :size="15" aria-hidden="true" />置于顶层</button><button type="button" :disabled="selectedElement.locked || selectedLayerIndex === 0" @click="act({ type: 'layer', direction: 'back' })"><MoveDown :size="15" aria-hidden="true" />置于底层</button></div>

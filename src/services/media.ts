@@ -8,6 +8,8 @@ import type { MediaAsset, ProgressCallback } from '../types';
 const resizer = pica();
 const MAX_BYTES = 150 * 1024 * 1024;
 const MAX_PIXELS = 60_000_000;
+const PREVIEW_SIDE = 1280;
+const imagePreviews = new WeakMap<MediaAsset, string>();
 const IMAGE_TYPES: Record<string, true> = { 'image/jpeg': true, 'image/png': true, 'image/webp': true, 'image/svg+xml': true, 'image/gif': true };
 const MIME_BY_EXTENSION: Record<string, string> = {
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', svg: 'image/svg+xml', gif: 'image/gif',
@@ -66,17 +68,37 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   return promise;
 }
 async function thumbnail(source: CanvasImageSource, width: number, height: number): Promise<string> {
-  const original = canvas(width, height);
-  context2d(original).drawImage(source, 0, 0, width, height);
   const scale = Math.min(1, 320 / Math.max(width, height));
   const preview = canvas(Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale)));
   try {
-    await resizer.resize(original, preview);
-    return URL.createObjectURL(await resizer.toBlob(preview, 'image/png'));
+    const context = context2d(preview);
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(source, 0, 0, preview.width, preview.height);
+    return URL.createObjectURL(await canvasToBlob(preview));
   } finally {
-    original.width = original.height = 0;
     preview.width = preview.height = 0;
   }
+}
+async function resizeImage(image: HTMLImageElement, maxSide: number): Promise<HTMLCanvasElement> {
+  const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+  const target = canvas(Math.max(1, Math.round(image.naturalWidth * scale)), Math.max(1, Math.round(image.naturalHeight * scale)));
+  try {
+    await resizer.resize(image, target);
+    return target;
+  } catch (error) {
+    target.width = target.height = 0;
+    throw error;
+  }
+}
+/** Runtime-only preview; project files and drafts retain the unchanged original. */
+export function imagePreviewSource(asset: MediaAsset): string {
+  return imagePreviews.get(asset) ?? asset.src;
+}
+/** Decode originals one at a time and retain only the pixels needed by the export. */
+export async function resizeAssetImage(asset: MediaAsset, maxSide: number): Promise<HTMLCanvasElement> {
+  const image = await loadImage(asset.src);
+  try { return await resizeImage(image, maxSide); }
+  finally { image.src = ''; }
 }
 async function inspectGif(blob: Blob): Promise<GifPlayback> {
   const gif = parseGIF(await blob.arrayBuffer());
@@ -217,13 +239,20 @@ export async function createAsset(input: Blob, name: string, requestedKind?: Med
       return { id: crypto.randomUUID(), name, kind, mime, blob, src, ...metadata };
     }
     const image = await loadImage(src);
-    validateDimensions(image.naturalWidth, image.naturalHeight);
-    const gif = mime === 'image/gif' ? await inspectGif(blob) : null;
-    const asset: MediaAsset = { id: crypto.randomUUID(), name, kind, mime, width: image.naturalWidth, height: image.naturalHeight, duration: gif && gif.frames.length > 1 ? gif.duration : 0, blob, src, thumbnail: '' };
-    if (gif) animatedImages.set(asset, gif);
-    thumbnailUrl = await thumbnail(gif ? compositeGif(gif, 0) : image, asset.width, asset.height);
-    asset.thumbnail = thumbnailUrl;
-    return asset;
+    try {
+      validateDimensions(image.naturalWidth, image.naturalHeight);
+      const gif = mime === 'image/gif' ? await inspectGif(blob) : null;
+      const asset: MediaAsset = { id: crypto.randomUUID(), name, kind, mime, width: image.naturalWidth, height: image.naturalHeight, duration: gif && gif.frames.length > 1 ? gif.duration : 0, blob, src, thumbnail: '' };
+      if (gif) animatedImages.set(asset, gif);
+      thumbnailUrl = await thumbnail(gif ? compositeGif(gif, 0) : image, asset.width, asset.height);
+      asset.thumbnail = thumbnailUrl;
+      if (!gif && Math.max(asset.width, asset.height) > PREVIEW_SIDE) {
+        const preview = await resizeImage(image, PREVIEW_SIDE);
+        try { imagePreviews.set(asset, URL.createObjectURL(await canvasToBlob(preview))); }
+        finally { preview.width = preview.height = 0; }
+      }
+      return asset;
+    } finally { image.src = ''; }
   } catch (error) {
     URL.revokeObjectURL(src);
     if (thumbnailUrl) URL.revokeObjectURL(thumbnailUrl);
@@ -251,6 +280,8 @@ export async function importMedia(files: File[] | FileList, onProgress?: Progres
 export function disposeAsset(asset: MediaAsset): void {
   URL.revokeObjectURL(asset.src);
   if (asset.thumbnail !== asset.src) URL.revokeObjectURL(asset.thumbnail);
+  const preview = imagePreviews.get(asset);
+  if (preview) { URL.revokeObjectURL(preview); imagePreviews.delete(asset); }
   const gif = animatedImages.get(asset);
   if (gif) { gif.canvas.width = gif.canvas.height = gif.patchCanvas.width = gif.patchCanvas.height = 0; animatedImages.delete(asset); }
 }

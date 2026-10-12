@@ -16,7 +16,7 @@ const photos = computed(() => {
   return sources.flatMap(source => {
     const asset = source.assetId ? props.assets[source.assetId] : undefined;
     if (!asset || (asset.kind !== 'image' && asset.kind !== 'video')) return [];
-    return [{ url: asset.kind === 'video' ? asset.thumbnail : asset.src, width: asset.width, height: asset.height, crop: source.crop, filter: source.filter }];
+    return [{ url: asset.kind === 'video' ? asset.thumbnail : asset.thumbnail || asset.src, width: asset.width, height: asset.height, crop: source.crop, filter: source.filter }];
   }).map((photo, index) => index === 0 ? { ...photo, crop: createCrop() } : photo);
 });
 const presets = computed(() => photoPostersForCount(photos.value.length));

@@ -8,7 +8,7 @@ import { filmPerforationPath, photoFrameGeometry } from './photoFrameGeometry';
 import { measureTextHeight, textFrameHeight, textNodeConfig, textPadding } from './textLayout';
 import { loadCanvasMedia, refreshMediaCache, seekVideo } from './canvasMedia';
 import type { CanvasMedia } from './canvasMedia';
-import { getAnimatedFrame } from '../services/media';
+import { getAnimatedFrame, imagePreviewSource, resizeAssetImage } from '../services/media';
 import { ensureSceneFonts } from '../services/fonts';
 
 const props = withDefaults(defineProps<{
@@ -41,6 +41,7 @@ let root: Konva.Group | undefined;
 let gizmos: Konva.Group | undefined;
 let transformer: Konva.Transformer | undefined;
 let selectionOutline: Konva.Rect | undefined;
+let patternNode: Konva.Group | undefined;
 let resizeObserver: ResizeObserver | undefined;
 let buildGeneration = 0;
 let buildPromise: Promise<void> = Promise.resolve();
@@ -59,6 +60,8 @@ const placeholderNodes: Konva.Node[] = [];
 interface VideoBinding { video: HTMLVideoElement; image: Konva.Image; start: number; end: number; muted: boolean; playBlocked?: boolean; playPending?: boolean }
 const videos: VideoBinding[] = [];
 const animatedAssets = new Map<string, MediaAsset>();
+interface PictureBinding { asset: MediaAsset; image: Konva.Image; source: CanvasMedia['source']; blur: number }
+const pictures: PictureBinding[] = [];
 const animatedBindings: { assetId: string; image: Konva.Image }[] = [];
 const pointers = new Map<number, { x: number; y: number }>();
 type Point = { x: number; y: number };
@@ -85,12 +88,18 @@ function resize() {
   updateSelection();
 }
 
+function resizeForViewport() {
+  const previousScale = viewport.value.scale;
+  resize();
+  if (viewport.value.scale !== previousScale) scheduleBuild();
+}
+
 function acquire(key: string, assetId: string, active: Set<string>) {
   const asset = props.assets[assetId];
   if (!asset || asset.kind === 'audio') return undefined;
   active.add(key);
   let media = resources.get(key);
-  if (!media || media.src !== asset.src) {
+  if (!media || media.src !== imagePreviewSource(asset)) {
     media?.dispose();
     media = loadCanvasMedia(asset);
     // All decode failures are surfaced; renderFrame also rejects instead of exporting a missing photo.
@@ -98,6 +107,15 @@ function acquire(key: string, assetId: string, active: Set<string>) {
     resources.set(key, media);
   }
   return media;
+}
+
+function cachePicture(binding: PictureBinding, pixelRatio: number) {
+  const { image } = binding;
+  if (!image.filters()?.length) return;
+  const ratio = Math.max(1 / Math.min(image.width(), image.height()), Math.min(1, pixelRatio));
+  image.clearCache();
+  image.blurRadius(binding.blur * ratio);
+  image.cache({ x: 0, y: 0, width: image.width(), height: image.height(), pixelRatio: ratio, hitCanvasPixelRatio: ratio });
 }
 
 function addPicture(parent: Konva.Group, key: string, assetId: string, width: number, height: number, crop: CropState, filter: FilterState, options?: Partial<ImageElement>) {
@@ -132,10 +150,12 @@ function addPicture(parent: Konva.Group, key: string, assetId: string, width: nu
   if (filter.blur) filters.push(Konva.Filters.Blur);
   if (filter.grayscale) filters.push(Konva.Filters.Grayscale);
   if (filter.sepia) filters.push(Konva.Filters.Sepia);
-  image.filters(filters).brightness(filter.brightness).contrast(filter.contrast).saturation(filter.saturation).blurRadius(filter.blur / Math.max(.001, sx));
+  image.filters(filters).brightness(filter.brightness).contrast(filter.contrast).saturation(filter.saturation);
   clipping.add(image);
   parent.add(clipping);
-  if (filters.length) image.cache({ x: 0, y: 0, width: asset.width, height: asset.height, pixelRatio: Math.min(1, 2048 / Math.max(asset.width, asset.height)) });
+  const binding: PictureBinding = { asset, image, source: resource.source, blur: filter.blur / Math.max(.001, Math.abs(sx)) };
+  pictures.push(binding);
+  cachePicture(binding, Math.min(1280 / Math.max(asset.width, asset.height), Math.max(Math.abs(sx), Math.abs(sy)) * viewport.value.scale * (layer?.getCanvas().getPixelRatio() ?? 1)));
   if (!treatment && options?.shadow) {
     const shadow = new Konva.Path({ data, x: frame.x, y: frame.y, fill: '#fff', shadowColor: '#20202d', shadowBlur: options.shadow, shadowOffsetY: options.shadow * .35, shadowOpacity: .26, listening: false });
     parent.add(shadow); shadow.moveToBottom();
@@ -186,7 +206,9 @@ function addBackground() {
     group.add(new Konva.Path({ data, stroke: color, strokeWidth: pattern === 'stripes' ? 5 : 1, opacity: .4 }));
   }
   root.add(group);
-  group.cache({ x: 0, y: 0, width: doc.width, height: doc.height, pixelRatio: 1 });
+  patternNode = group;
+  const ratio = Math.min(1, viewport.value.scale * (layer?.getCanvas().getPixelRatio() ?? 1));
+  group.cache({ x: 0, y: 0, width: doc.width, height: doc.height, pixelRatio: ratio, hitCanvasPixelRatio: ratio });
 }
 
 // Selection follows the displayed frame, not bitmap overflow or text shadows.
@@ -271,7 +293,7 @@ async function rebuild() {
   for (const [key, resource] of resources) if (!active.has(key)) { resource.dispose(); resources.delete(key); }
   transformer?.nodes([]);
   root?.destroy(); gizmos?.destroy();
-  videos.length = 0; animatedAssets.clear(); animatedBindings.length = 0; elementNodes.clear(); placeholderNodes.length = 0;
+  videos.length = 0; animatedAssets.clear(); animatedBindings.length = 0; pictures.length = 0; patternNode = undefined; elementNodes.clear(); placeholderNodes.length = 0;
   const doc = props.document;
   root = new Konva.Group({ clipX: 0, clipY: 0, clipWidth: doc.width, clipHeight: doc.height });
   layer.add(root);
@@ -638,8 +660,10 @@ async function renderFrameNow(time: number, pixelRatio: number): Promise<HTMLCan
   await ensureSceneFonts(props.document.elements);
   await buildPromise;
   await Promise.all([...resources.values()].map(resource => resource.ready));
-  const original = { width: stage.width(), height: stage.height(), scaleX: stage.scaleX(), scaleY: stage.scaleY(), time: previewTime, listening: stage.listening() };
+  const original = { width: stage.width(), height: stage.height(), scaleX: stage.scaleX(), scaleY: stage.scaleY(), time: previewTime, listening: stage.listening(), sceneRatio: layer.getCanvas().getPixelRatio(), hitRatio: layer.getHitCanvas().getPixelRatio() };
   const originalVideos = videos.map(binding => ({ binding, time: binding.video.currentTime, paused: binding.video.paused }));
+  const ratio = Math.max(1 / Math.min(props.document.width, props.document.height), pixelRatio);
+  const exportImages: HTMLCanvasElement[] = [];
   exporting = true;
   stage.listening(false);
   cancelAnimationFrame(raf); raf = 0;
@@ -648,13 +672,36 @@ async function renderFrameNow(time: number, pixelRatio: number): Promise<HTMLCan
     await updateAnimated(Math.max(0, time));
     for (const binding of videos) binding.video.pause();
     await Promise.all(videos.map(binding => seekVideo(binding.video, binding.start + Math.max(0, time) % Math.max(.01, binding.end - binding.start))));
-    for (const binding of videos) refreshMediaCache(binding.image);
-    stage.size({ width: props.document.width, height: props.document.height }); stage.scale({ x: 1, y: 1 });
+    layer.getCanvas().setPixelRatio(1); layer.getHitCanvas().setPixelRatio(1);
+    stage.size({ width: Math.round(props.document.width * ratio), height: Math.round(props.document.height * ratio) }); stage.scale({ x: ratio, y: ratio });
+    applyTime(Math.max(0, time), true);
+    for (const binding of pictures) {
+      const scale = binding.image.getAbsoluteScale();
+      const neededSide = Math.ceil(Math.max(binding.asset.width * Math.abs(scale.x), binding.asset.height * Math.abs(scale.y)));
+      if (binding.source instanceof HTMLImageElement && binding.asset.mime !== 'image/gif' && neededSide > Math.max(binding.source.naturalWidth, binding.source.naturalHeight)) {
+        const image = await resizeAssetImage(binding.asset, neededSide);
+        exportImages.push(image);
+        binding.image.image(image);
+      }
+      cachePicture(binding, Math.max(Math.abs(scale.x), Math.abs(scale.y)));
+    }
+    if (patternNode) patternNode.cache({ x: 0, y: 0, width: props.document.width, height: props.document.height, pixelRatio: ratio, hitCanvasPixelRatio: ratio });
     gizmos?.hide(); for (const node of placeholderNodes) node.hide();
-    applyTime(Math.max(0, time), true); layer.draw();
-    return stage.toCanvas({ x: 0, y: 0, width: props.document.width, height: props.document.height, pixelRatio: Math.max(.1, pixelRatio) });
+    layer.draw();
+    return stage.toCanvas({ x: 0, y: 0, width: stage.width(), height: stage.height(), pixelRatio: 1 });
   } finally {
     stage.size({ width: original.width, height: original.height }); stage.scale({ x: original.scaleX, y: original.scaleY });
+    layer.getCanvas().setPixelRatio(original.sceneRatio); layer.getHitCanvas().setPixelRatio(original.hitRatio);
+    for (const binding of pictures) {
+      binding.image.image(binding.source);
+      const scale = binding.image.getAbsoluteScale();
+      cachePicture(binding, Math.min(1280 / Math.max(binding.asset.width, binding.asset.height), Math.max(Math.abs(scale.x), Math.abs(scale.y)) * original.sceneRatio));
+    }
+    for (const image of exportImages) image.width = image.height = 0;
+    if (patternNode) {
+      const ratio = Math.min(1, viewport.value.scale * original.sceneRatio);
+      patternNode.cache({ x: 0, y: 0, width: props.document.width, height: props.document.height, pixelRatio: ratio, hitCanvasPixelRatio: ratio });
+    }
     stage.listening(original.listening);
     for (const node of placeholderNodes) node.show(); gizmos?.show();
     applyTime(original.time, props.playing);
@@ -735,15 +782,15 @@ onMounted(async () => {
   container.addEventListener('lostpointercapture', lostPointerCapture);
   for (const type of compatibilityEvents) container.addEventListener(type, suppressCompatibility, { capture: true, passive: false });
   container.addEventListener('wheel', wheel, { passive: false });
-  resizeObserver = new ResizeObserver(resize); resizeObserver.observe(host.value);
-  window.addEventListener('resize', resize);
+  resizeObserver = new ResizeObserver(resizeForViewport); resizeObserver.observe(host.value);
+  window.addEventListener('resize', resizeForViewport);
   resize(); scheduleBuild();
   if (props.playing) raf = requestAnimationFrame(tick);
 });
 
 onBeforeUnmount(() => {
   cancelGesture();
-  mounted = false; ++buildGeneration; cancelAnimationFrame(raf); resizeObserver?.disconnect(); window.removeEventListener('resize', resize);
+  mounted = false; ++buildGeneration; cancelAnimationFrame(raf); resizeObserver?.disconnect(); window.removeEventListener('resize', resizeForViewport);
   const container = stage?.container();
   container?.removeEventListener('pointerdown', pointerDown, true);
   window.removeEventListener('pointermove', pointerMove, true);
