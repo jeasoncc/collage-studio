@@ -4,6 +4,7 @@ appId: top.szlh.collage
     element:
       text: "保存可编辑项目"
     direction: DOWN
+    centerElement: true
     timeout: 30000
 - tapOn: "保存可编辑项目"
 - extendedWaitUntil:

@@ -9,7 +9,9 @@ appId: top.szlh.collage
     element:
       text: "先试试看.*"
     direction: DOWN
+    centerElement: true
     timeout: 30000
+- takeScreenshot: "01b-sample-link-clear-of-bottom-navigation"
 - tapOn: "先试试看.*"
 - extendedWaitUntil:
     visible: "已选 3 张.*"
