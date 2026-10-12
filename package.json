@@ -15,6 +15,7 @@
     "start": "bun server/index.ts",
     "test": "vitest run",
     "license:codecs": "bun scripts/license-codecs.mjs build",
+    "license:native": "bun scripts/license-native.mjs",
     "license:release": "bun scripts/license-codecs.mjs release",
     "build:native": "COLLAGE_NATIVE=1 bun run build --base=/",
     "native:dev": "tauri dev",

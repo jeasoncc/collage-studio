@@ -1,0 +1,116 @@
+name: iOS Files export acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_id:
+        description: Existing verified ios-simulator-app artifact; no application rebuild
+        required: true
+        type: string
+        default: '11738451664'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  native-files:
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      MAESTRO_CLI_NO_ANALYTICS: 'true'
+      MAESTRO_DISABLE_UPDATE_CHECK: 'true'
+      MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED: 'true'
+      MAESTRO_DRIVER_STARTUP_TIMEOUT: '180000'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Download and verify existing app before extraction
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+        run: |
+          node scripts/ios-smoke/download-artifact.mjs
+          unzip -q "$RUNNER_TEMP/ios-verified-input.zip" -d "$RUNNER_TEMP/ios-verified-input"
+          ditto -x -k "$RUNNER_TEMP/ios-verified-input/ios-simulator.zip" "$RUNNER_TEMP/ios-prebuilt-app"
+          cp "$RUNNER_TEMP/ios-verified-input/collage-studio-source.tar.gz" out/ios-smoke/
+          cp "$RUNNER_TEMP/ios-verified-input/collage-studio-codec-corresponding-source.tar.gz" out/ios-smoke/
+          cp "$RUNNER_TEMP/ios-verified-input/collage-studio-codec-corresponding-source.tar.gz.sha256" out/ios-smoke/
+          mkdir -p out/ios-smoke/automation
+          cp scripts/ios-smoke/* out/ios-smoke/automation/
+          cp .github/workflows/ios-smoke.yml out/ios-smoke/automation/
+      - name: Install pinned official Maestro CLI
+        run: |
+          curl --fail --location --retry 3 https://github.com/mobile-dev-inc/Maestro/releases/download/cli-2.11.0/maestro.zip -o "$RUNNER_TEMP/maestro.zip"
+          printf '5384593cb4e7a106489e75a821d157dd43f4e438df6bc308b72e82c685e1283a  %s\n' "$RUNNER_TEMP/maestro.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/maestro.zip" -d "$RUNNER_TEMP/maestro-cli"
+          MAESTRO_BIN="$(find "$RUNNER_TEMP/maestro-cli" -type f -path '*/bin/maestro' -print -quit)"
+          test -n "$MAESTRO_BIN"
+          chmod +x "$MAESTRO_BIN"
+          dirname "$MAESTRO_BIN" >> "$GITHUB_PATH"
+          "$MAESTRO_BIN" --version | tee out/ios-smoke/maestro-version.txt
+          "$MAESTRO_BIN" --help > out/ios-smoke/maestro-help.txt
+      - name: Boot actual iOS 26.2 simulator and install prebuilt app
+        run: |
+          xcrun simctl list devices available --json > out/ios-smoke/available-devices.json
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const devices = JSON.parse(fs.readFileSync('out/ios-smoke/available-devices.json', 'utf8')).devices;
+          const candidate = Object.entries(devices).filter(([runtime]) => runtime.endsWith('.iOS-26-2')).flatMap(([runtime, values]) => values.filter(device => device.isAvailable && device.name.startsWith('iPhone')).map(device => ({ ...device, runtime })))[0];
+          if (!candidate) throw new Error('No available iPhone simulator with the accepted iOS 26.2 runtime.');
+          fs.appendFileSync(process.env.GITHUB_ENV, `DEVICE_ID=${candidate.udid}\nSIMULATOR_DATA_ROOT=${process.env.HOME}/Library/Developer/CoreSimulator/Devices/${candidate.udid}/data\n`);
+          fs.writeFileSync('out/ios-smoke/simulator.json', JSON.stringify(candidate, null, 2) + '\n');
+          NODE
+      - name: Install and launch the unchanged compiled application
+        run: |
+          xcrun simctl boot "$DEVICE_ID"
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+          open -a Simulator --args -CurrentDeviceUDID "$DEVICE_ID"
+          APP="$(find "$RUNNER_TEMP/ios-prebuilt-app" -type d -name '*.app' -prune -print -quit)"
+          test -n "$APP"
+          plutil -p "$APP/Info.plist" > out/ios-smoke/app-info.txt
+          xcrun simctl install "$DEVICE_ID" "$APP"
+          xcrun simctl launch --stdout="$PWD/out/ios-smoke/app-stdout.txt" --stderr="$PWD/out/ios-smoke/app-stderr.txt" "$DEVICE_ID" top.szlh.collage | tee out/ios-smoke/launch.txt
+          maestro --device "$DEVICE_ID" test --help > out/ios-smoke/maestro-test-help.txt
+      - name: Save actual three-photo PNG through system Files
+        run: |
+          maestro --device "$DEVICE_ID" test --format JUNIT --output out/ios-smoke/png-report.xml --debug-output out/ios-smoke/debug-png --test-output-dir out/ios-smoke/screenshots scripts/ios-smoke/save-png.yml
+          node scripts/ios-smoke/inspect-files.mjs png
+      - name: Cancel second save without false success or changed file
+        run: |
+          maestro --device "$DEVICE_ID" test --format JUNIT --output out/ios-smoke/cancel-report.xml --debug-output out/ios-smoke/debug-cancel --test-output-dir out/ios-smoke/screenshots scripts/ios-smoke/cancel-png.yml
+          node scripts/ios-smoke/inspect-files.mjs cancel
+      - name: Save real editable project and verify all three originals
+        run: |
+          maestro --device "$DEVICE_ID" test --format JUNIT --output out/ios-smoke/project-report.xml --debug-output out/ios-smoke/debug-project --test-output-dir out/ios-smoke/screenshots scripts/ios-smoke/save-project.yml
+          node scripts/ios-smoke/inspect-files.mjs project
+      - name: Capture actual simulator and tool diagnostics
+        if: always()
+        run: |
+          mkdir -p out/ios-smoke
+          xcodebuild -version > out/ios-smoke/xcode-version.txt
+          if test -n "${DEVICE_ID:-}"; then
+            xcrun simctl io "$DEVICE_ID" screenshot out/ios-smoke/final-simulator-screen.png
+            xcrun simctl spawn "$DEVICE_ID" log show --last 15m --style compact --predicate 'process == "拼贴时光"' > out/ios-smoke/runtime.log
+            node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { spawnSync } from 'node:child_process';
+          const result = spawnSync('maestro', ['--device', process.env.DEVICE_ID, 'hierarchy'], { encoding: 'utf8', timeout: 60000 });
+          fs.writeFileSync('out/ios-smoke/hierarchy.txt', (result.stdout ?? '') + (result.stderr ?? ''));
+          fs.writeFileSync('out/ios-smoke/hierarchy-status.json', JSON.stringify({ exitCode: result.status, error: result.error?.message }, null, 2) + '\n');
+          NODE
+          fi
+          find out/ios-smoke -type f ! -name SHA256SUMS -exec shasum -a 256 '{}' \; > out/ios-smoke/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-files-export-evidence
+          path: out/ios-smoke/
+          if-no-files-found: error

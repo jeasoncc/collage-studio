@@ -1,0 +1,19 @@
+appId: top.szlh.collage
+---
+- extendedWaitUntil:
+    notVisible: "文件已保存到你选择的位置。"
+    timeout: 10000
+- tapOn:
+    text: "再次保存图片"
+    enabled: true
+- extendedWaitUntil:
+    visible: "Cancel"
+    timeout: 30000
+- takeScreenshot: "06-native-png-cancel-picker"
+- tapOn: "Cancel"
+- extendedWaitUntil:
+    notVisible: "正在保存文件"
+    timeout: 10000
+- assertVisible: "再次保存图片"
+- assertNotVisible: "文件已保存到你选择的位置。"
+- takeScreenshot: "07-native-png-cancelled-no-success"

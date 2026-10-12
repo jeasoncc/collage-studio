@@ -62,7 +62,8 @@
 
 <p align="center">
   <img src="docs/images/android-emulator.webp" width="270" alt="Android 36 x86_64 模拟器中实际安装并运行的 Tauri 应用首页" />
-  <br /><sub>实际 Android 36 模拟器：调试签名 APK，内嵌前端；已通过系统文件选择器保存 PNG。不是实体手机或商店上架证明。</sub>
+  <img src="docs/images/ios-simulator.webp" width="270" alt="macOS CI 中实际安装并持续运行的 iOS 26.2 模拟器应用首页" />
+  <br /><sub>左：Android 36 模拟器，调试签名 APK，系统文件选择器保存 PNG 已验收。右：iOS 26.2 模拟器，实际编译、安装、持续运行及首页绘制已验收；无签名真机 IPA。两图都不是浏览器移动视口或商店上架证明。</sub>
 </p>
 
 <p align="center">
@@ -182,6 +183,8 @@ bun run native:ios:build --debug --target aarch64-sim --no-sign --ci
 
 构建与签名流程见 [native.yml](.github/workflows/native.yml)。模拟器验收检查应用进程存活，并保留应用、生成的 Xcode 工程、SDK 信息及启动/崩溃日志；构建通过或截到系统桌面不算应用运行通过。平台工程支持不等于实体手机验收。
 
+当前保留官方 Wry 0.57.0 的完整源码与双许可证，仅修正 WebKit 框架 Bundle 查询，避免 iOS 26.2 启动时的 `CFRelease(NULL)` 崩溃；使用实际 `WKWebView` 类所属 Bundle，不屏蔽异常或返回假版本。精确来源、原始归档 SHA-256 与本地修改见 [`collage-origin.json`](src-tauri/vendor/wry/collage-origin.json)。[真实模拟器验收](https://github.com/jeasoncc/collage-studio/actions/runs/38229087642/job/114743819057)包含实际应用截图与进程存活检查。
+
 ## Linux 分发
 
 当前目标只有 **AUR（yay）** 与 **Snap Store**。构建包、登记渠道、实际发布是不同步骤；未完成账户授权与上传前，不宣称渠道已上架。
@@ -280,11 +283,21 @@ Vue 3 / TypeScript / Pinia 构建界面；Konva 负责画布；Dexie 负责本�
 - Fluent Emoji：Microsoft MIT 美术许可；Lucide 还包含 ISC/Feather 条款。
 - Mediabunny/AAC 桥接：MPL-2.0；FFmpeg 7.1.1：LGPL-2.1-or-later。
 - libheif 1.19.8 / libde265 1.0.16：LGPL-3.0-or-later；Emscripten 及运行库保持原许可。
+- Rust/Tauri 原生依赖：分别保留 MIT、Apache、BSD、Unicode、MPL 等原始声明、版权与 NOTICE；Apple SDK 派生绑定保留上游的 Xcode 许可说明，不把 Apple SDK 重新授权为 MIT。
 - 示例摄影：Paul Jarvis / Unsplash，经 Lorem Picsum 提供；适用 [Unsplash License](https://unsplash.com/license)，**不是 CC0**，也不作为可独立销售的照片素材库。
 
 摄影来源：[森林](https://unsplash.com/photos/6J--NXulQCs) · [海岸](https://unsplash.com/photos/I_9ILwtsl_k) · [山海](https://unsplash.com/photos/gkT4FfgHO5o)。
 
 完整原文与归属见 [第三方通知](public/third-party-notices.txt)；精确来源哈希、构建/重新组合方式见 [源码分发说明](third_party/codecs/DISTRIBUTION.txt) 和 [来源锁](third_party/codecs/sources.lock.json)。
+
+更新原生依赖后，使用匹配的 Rust 文档组件重新收集原始通知：
+
+```sh
+rustup component add rust-docs
+bun run license:native
+```
+
+收集器校验固定来源的通知哈希，保留已有 Web/字体/媒体通知，追加 Cargo 依赖、Tauri JavaScript 桥及 Rust 标准库版权材料；相同原文按 SHA-256 合并，不生成假版权。缺少原文时失败，不用泛化 MIT 文本顶替。
 
 **分发二进制时必须同时提供实际对应材料**：
 

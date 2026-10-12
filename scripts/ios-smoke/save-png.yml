@@ -1,0 +1,50 @@
+appId: top.szlh.collage
+---
+- launchApp
+- extendedWaitUntil:
+    visible: "开始拼图"
+    timeout: 30000
+- takeScreenshot: "01-home"
+- scrollUntilVisible:
+    element:
+      text: "先试试看.*"
+    direction: DOWN
+    timeout: 30000
+- tapOn: "先试试看.*"
+- extendedWaitUntil:
+    visible: "已选 3 张.*"
+    timeout: 60000
+- takeScreenshot: "02-three-sample-photos"
+- tapOn:
+    text: "开始拼图"
+    enabled: true
+- extendedWaitUntil:
+    visible: "作品名称"
+    timeout: 60000
+- tapOn: "作品名称"
+- eraseText
+- inputText: "ios-smoke"
+- pressKey: Enter
+- tapOn: "保存"
+- extendedWaitUntil:
+    visible: "保存作品"
+    timeout: 30000
+- tapOn: "PNG"
+- tapOn: "高清"
+- takeScreenshot: "03-png-export-options"
+- tapOn:
+    text: "保存图片"
+    enabled: true
+- extendedWaitUntil:
+    visible: "On My iPhone"
+    timeout: 120000
+- takeScreenshot: "04-native-png-file-picker"
+- tapOn: "On My iPhone"
+- tapOn:
+    text: "Save"
+    enabled: true
+- extendedWaitUntil:
+    visible: "文件已保存到你选择的位置。"
+    timeout: 10000
+- takeScreenshot: "05-native-png-saved"
+- assertVisible: "再次保存图片"
