@@ -7,7 +7,7 @@ appId: top.szlh.collage
     text: "再次保存图片"
     enabled: true
 - extendedWaitUntil:
-    visible: "Save"
+    visible: "Cancel"
     timeout: 30000
 - takeScreenshot: "06-native-png-cancel-picker"
 # iOS 26.2 labels the folder's ellipsis as "Cancel". The observed top-left
