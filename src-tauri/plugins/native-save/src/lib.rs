@@ -65,15 +65,43 @@ fn prepare<R: Runtime>(app: AppHandle<R>, state: State<'_, NativeSave<R>>, filen
 #[tauri::command]
 fn append<R: Runtime>(app: AppHandle<R>, request: Request<'_>) -> Result<(), String> {
     let id = request.headers().get("x-export-token").and_then(|v| v.to_str().ok()).ok_or("Missing export token")?;
-    let InvokeBody::Raw(bytes) = request.body() else { return Err("Binary IPC body required".into()); };
-    if bytes.len() > 4 * 1024 * 1024 { return Err("Export chunk is too large".into()); }
+    let length = match request.body() {
+        InvokeBody::Raw(bytes) => bytes.len(),
+        #[cfg(target_os = "android")]
+        InvokeBody::Json(value) => {
+            // Android's official Tauri IPC serializes ArrayBuffer as a JSON byte array.
+            let bytes = value.as_array().ok_or("Binary IPC byte array required")?;
+            if bytes.len() > 4 * 1024 * 1024 { return Err("Export chunk is too large".into()); }
+            if bytes.iter().any(|byte| byte.as_u64().is_none_or(|value| value > 255)) {
+                return Err("Invalid IPC byte value".into());
+            }
+            bytes.len()
+        }
+        #[cfg(not(target_os = "android"))]
+        _ => return Err("Binary IPC body required".into()),
+    };
+    if length > 4 * 1024 * 1024 { return Err("Export chunk is too large".into()); }
     let state = app.state::<NativeSave<R>>();
     let mut exports = state.exports.lock().map_err(|e| e.to_string())?;
     let export = exports.active.as_mut().ok_or("No export is in progress")?;
     if token(export) != id { return Err("Invalid export token".into()); }
-    let next = export.written.checked_add(bytes.len() as u64).ok_or("Export length overflow")?;
+    let next = export.written.checked_add(length as u64).ok_or("Export length overflow")?;
     if next > export.expected { return Err("Export exceeds declared size".into()); }
-    export.file.write_all(bytes).map_err(|e| e.to_string())?;
+    match request.body() {
+        InvokeBody::Raw(bytes) => export.file.write_all(bytes).map_err(|e| e.to_string())?,
+        #[cfg(target_os = "android")]
+        InvokeBody::Json(value) => {
+            let mut buffer = [0_u8; 64 * 1024];
+            for chunk in value.as_array().unwrap().chunks(buffer.len()) {
+                for (destination, byte) in buffer.iter_mut().zip(chunk) {
+                    *destination = byte.as_u64().unwrap() as u8;
+                }
+                export.file.write_all(&buffer[..chunk.len()]).map_err(|e| e.to_string())?;
+            }
+        }
+        #[cfg(not(target_os = "android"))]
+        _ => unreachable!("non-binary IPC was rejected above"),
+    }
     export.written = next;
     Ok(())
 }

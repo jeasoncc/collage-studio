@@ -18,7 +18,7 @@ const database = new DraftDatabase();
 const copyProject = (project: EditorProject): EditorProject => validateProject(JSON.parse(JSON.stringify(project)));
 function actionable(prefix: string, error: unknown): Error {
   const detail = error instanceof Error ? error.message : '';
-  if (detail && /[\u4e00-\u9fff]/.test(detail)) return new Error(`${prefix}：${detail}`);
+  if (detail) return new Error(`${prefix}：${detail}`, { cause: error });
   return new Error(`${prefix}。请检查文件完整性、浏览器存储权限及可用空间，然后重试。`);
 }
 function metadataOf(asset: MediaAsset): AssetMetadata {

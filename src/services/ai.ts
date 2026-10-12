@@ -52,9 +52,11 @@ export async function removeBackground(asset: MediaAsset, model: CutoutModelKind
   if (asset.mime === 'image/gif') {
     onProgress?.(0, 'GIF 仅对第一帧进行抠图，结果为静态透明 PNG。');
     input = await canvasToBlob(await getAnimatedFrame(asset, 0));
-  } else if (asset.mime === 'image/svg+xml') {
+  } else if (asset.mime === 'image/svg+xml' || (asset.mime === 'image/webp'
+    && navigator.userAgent.includes('AppleWebKit') && !navigator.userAgent.includes('Chrome/') && !navigator.userAgent.includes('Chromium/'))) {
+    // WebKit's worker decoder cannot read WebP; rasterize with its working main-thread decoder.
     const image = new Image(); image.src = asset.src;
-    try { await image.decode(); } catch { throw new Error('无法读取此 SVG 图片。'); }
+    try { await image.decode(); } catch { throw new Error('无法读取此图片。'); }
     const canvas = document.createElement('canvas'); canvas.width = asset.width; canvas.height = asset.height;
     const context = canvas.getContext('2d');
     if (!context) throw new Error('无法创建图片画布。');

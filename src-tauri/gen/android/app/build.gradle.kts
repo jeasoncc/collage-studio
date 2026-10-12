@@ -14,8 +14,20 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Keep release credentials outside the repository and Gradle command-line arguments.
+val releaseSigning = listOf(
+    "COLLAGE_ANDROID_KEYSTORE",
+    "COLLAGE_ANDROID_STORE_PASSWORD",
+    "COLLAGE_ANDROID_KEY_ALIAS",
+    "COLLAGE_ANDROID_KEY_PASSWORD",
+).associateWith { System.getenv(it)?.takeIf(String::isNotBlank) }
+require(releaseSigning.values.all { it == null } || releaseSigning.values.all { it != null }) {
+    "Set all four COLLAGE_ANDROID_* signing variables, or none to build an unsigned release."
+}
+
 android {
     compileSdk = 36
+    ndkVersion = "27.2.12479018"
     namespace = "top.szlh.collage"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
@@ -24,6 +36,16 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (releaseSigning.values.all { it != null }) {
+            create("distribution") {
+                storeFile = file(releaseSigning.getValue("COLLAGE_ANDROID_KEYSTORE")!!)
+                storePassword = releaseSigning.getValue("COLLAGE_ANDROID_STORE_PASSWORD")
+                keyAlias = releaseSigning.getValue("COLLAGE_ANDROID_KEY_ALIAS")
+                keyPassword = releaseSigning.getValue("COLLAGE_ANDROID_KEY_PASSWORD")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -39,6 +61,7 @@ android {
             }
         }
         getByName("release") {
+            signingConfig = signingConfigs.findByName("distribution")
             optimization {
                enable = true
             }

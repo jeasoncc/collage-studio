@@ -41,6 +41,8 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
       - name: Install codec source build dependencies
         run: sudo apt-get update && sudo apt-get install -y build-essential cmake autoconf automake libtool pkg-config patch xz-utils
       - name: Install pinned Android SDK and Rust targets
@@ -137,6 +139,9 @@ jobs:
           rustup toolchain install "$RUST_VERSION" --profile minimal
           rustup default "$RUST_VERSION"
           rustup target add aarch64-apple-ios-sim aarch64-apple-ios
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-version
       - name: Install codec source build dependencies
         run: brew install autoconf automake libtool pkg-config cmake
       - run: bun install --frozen-lockfile
@@ -144,12 +149,34 @@ jobs:
         run: bun run native:ios:init --ci
       - name: Build unsigned simulator app
         run: bun run native:ios:build --debug --target aarch64-sim --no-sign --ci
+      - name: Package simulator app
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find src-tauri/gen/apple -type d -name '*.app' -not -path '*.xcarchive/*' -print -quit)
+          test -n "$app"
+          mkdir -p native-release/ios-simulator
+          ditto -c -k --keepParent "$app" native-release/ios-simulator/ios-simulator.zip
+          test -n "$(find src-tauri/gen/apple -name project.pbxproj -type f -print -quit)"
+          tar --exclude=build --exclude=Externals --exclude=.tauri -czf native-release/ios-simulator/ios-generated-project.tar.gz -C src-tauri/gen apple
+          bun scripts/license-codecs.mjs release native-release/ios-simulator
+          git archive --format=tar.gz --prefix=collage-studio/ HEAD --output=native-release/ios-simulator/collage-studio-source.tar.gz
       - name: Launch the actual iOS simulator app
         shell: bash
         run: |
           set -euo pipefail
           app=$(find src-tauri/gen/apple -type d -name '*.app' -not -path '*.xcarchive/*' -print -quit)
           test -n "$app"
+          mkdir -p native-release/ios-simulator
+          {
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            xcodebuild -version
+            xcrun --sdk iphonesimulator --show-sdk-version
+            xcrun simctl list devices available
+            /usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist"
+            /usr/libexec/PlistBuddy -c 'Print CFBundleSupportedPlatforms' "$app/Info.plist"
+          } > native-release/ios-simulator/build-environment.txt
           device="$(xcrun simctl list devices available --json | node --input-type=module -e '
             import { readFileSync } from "node:fs";
             import { z } from "zod";
@@ -164,25 +191,48 @@ jobs:
             if (!device) throw new Error("No installed iPhone simulator runtime");
             process.stdout.write(device.udid);
           ')"
-          trap 'xcrun simctl shutdown "$device" >/dev/null 2>&1 || true' EXIT
+          collect_diagnostics() {
+            xcrun simctl spawn "$device" log show --last 5m --style compact \
+              --predicate 'process == "拼贴时光" OR eventMessage CONTAINS "top.szlh.collage"' \
+              > native-release/ios-simulator/runtime.log 2>&1 || true
+            if test -d "$HOME/Library/Logs/DiagnosticReports"; then
+              find "$HOME/Library/Logs/DiagnosticReports" -type f -name '*拼贴时光*' \
+                -exec cp {} native-release/ios-simulator/ \; || true
+            fi
+            xcrun simctl shutdown "$device" >/dev/null 2>&1 || true
+          }
+          trap collect_diagnostics EXIT
           xcrun simctl boot "$device"
           xcrun simctl bootstatus "$device" -b
           xcrun simctl install "$device" "$app"
-          xcrun simctl launch "$device" top.szlh.collage
-          sleep 5
-          mkdir -p native-release/ios-simulator
-          xcrun simctl io "$device" screenshot native-release/ios-simulator/ios-simulator-home.png
-      - name: Package simulator app
+          echo "Simulator UDID: $device" >> native-release/ios-simulator/build-environment.txt
+          SIMCTL_CHILD_RUST_BACKTRACE=1 xcrun simctl launch \
+            --stdout="$GITHUB_WORKSPACE/native-release/ios-simulator/app-stdout.log" \
+            --stderr="$GITHUB_WORKSPACE/native-release/ios-simulator/app-stderr.log" \
+            "$device" top.szlh.collage | tee native-release/ios-simulator/launch.txt
+          app_pid="$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const output = readFileSync("native-release/ios-simulator/launch.txt", "utf8");
+            const match = /^top\.szlh\.collage: (\d+)$/m.exec(output);
+            if (!match) throw new Error("simctl did not return an app process ID");
+            process.stdout.write(match[1]);
+          ')"
+          sleep 15
+          xcrun simctl io "$device" screenshot native-release/ios-simulator/ios-simulator-screen.png
+          if ! kill -0 "$app_pid" 2>/dev/null; then
+            echo "::error::The iOS app exited after launch; the captured screen is not proof of a running app."
+            exit 1
+          fi
+          echo "App remained running at screenshot: PID $app_pid" >> native-release/ios-simulator/build-environment.txt
+      - name: Hash simulator artifacts and runtime diagnostics
+        if: always()
         shell: bash
         run: |
-          set -euo pipefail
-          app=$(find src-tauri/gen/apple -type d -name '*.app' -not -path '*.xcarchive/*' -print -quit)
-          test -n "$app"
-          mkdir -p native-release/ios-simulator
-          ditto -c -k --keepParent "$app" native-release/ios-simulator/ios-simulator.zip
-          bun scripts/license-codecs.mjs release native-release/ios-simulator
-          git archive --format=tar.gz --prefix=collage-studio/ HEAD --output=native-release/ios-simulator/collage-studio-source.tar.gz
+          if test -d native-release/ios-simulator; then
+            find native-release/ios-simulator -type f ! -name SHA256SUMS -exec shasum -a 256 {} + > native-release/ios-simulator/SHA256SUMS
+          fi
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: ios-simulator-app
           path: native-release/ios-simulator/*
