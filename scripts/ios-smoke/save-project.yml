@@ -17,9 +17,10 @@ appId: top.szlh.collage
       visible: "On My iPhone"
     commands:
       - tapOn: "On My iPhone"
+# iOS 26.2 omits the remembered-folder Save button from XCTest accessibility.
+# Tap the actual top-right blue Save control captured in the preceding screenshot.
 - tapOn:
-    text: "Save"
-    enabled: true
+    point: "88%,12%"
 - extendedWaitUntil:
     visible: "可编辑项目已保存，可在其他设备导入继续编辑。"
     timeout: 10000
