@@ -22,6 +22,9 @@ tauri-plugin-fs = "=2.6.0"
 tauri-plugin-opener = "=2.7.0"
 tauri-plugin-native-save = { path = "plugins/native-save" }
 
+[patch.crates-io]
+wry = { path = "vendor/wry", version = "=0.57.0" }
+
 [profile.release]
 lto = true
 codegen-units = 1

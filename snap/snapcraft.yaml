@@ -60,31 +60,81 @@ parts:
       - patch
     override-build: |
       set -eu
-      export CARGO_HOME="$CRAFT_PART_BUILD/.cargo-home"
-      export RUSTUP_HOME="$CRAFT_PART_BUILD/.rustup-home"
+      # Capture the exact build input before dependency installation or generated
+      # assets. The release workflow supplies its immutable git source archive;
+      # direct Snapcraft builds generate the equivalent complete source locally.
+      source_archive="$CRAFT_PART_SRC/snap/local/collage-studio-1.0.0.tar.gz"
+      source_materials="$CRAFT_PART_BUILD/.source-materials"
+      mkdir -p "$source_materials"
+      if [ -f "$source_archive" ]; then
+        cp "$source_archive" "$source_materials/collage-studio-1.0.0.tar.gz"
+      else
+        tar --exclude-vcs-ignores -C "$CRAFT_PART_SRC" --transform='s,^\./,collage-studio-1.0.0/,' \
+          --exclude='.git' --exclude='.env' --exclude='.env.*' \
+          --exclude='./.smoke' --exclude='./snap/local' --exclude='./node_modules' --exclude='./out' \
+          --exclude='./dist' --exclude='./dist-native' --exclude='./src-tauri/target' \
+          --exclude='./src-tauri/gen/schemas' --exclude='./src-tauri/gen/apple' \
+          --exclude='./src-tauri/gen/android/.gradle' --exclude='./src-tauri/gen/android/.tauri' \
+          --exclude='./src-tauri/gen/android/build' --exclude='./src-tauri/gen/android/app/build' \
+          --exclude='./src-tauri/gen/android/app/.cxx' --exclude='./src-tauri/gen/android/local.properties' \
+          --exclude='./src-tauri/plugins/native-save/android/.tauri' --exclude='./src-tauri/plugins/native-save/android/build' \
+          --exclude='./packaging/aur/collage-studio' \
+          --exclude='./third_party/codecs/.work' \
+          --exclude='./third_party/codecs/relink' --exclude='./third_party/codecs/aac/build' \
+          --exclude='./third_party/codecs/generated/*.js' --exclude='./third_party/codecs/build-receipt.json' \
+          --exclude='./parts' --exclude='./stage' --exclude='./prime' --exclude='./.snapcraft' \
+          --exclude='./.source-materials' --exclude='*.snap' \
+          --exclude='*.keystore' --exclude='*.jks' --exclude='*.p12' --exclude='*.mobileprovision' \
+          --exclude='*.apk' --exclude='*.aab' --exclude='*.ipa' --exclude='*.collage' \
+          -czf "$source_materials/collage-studio-1.0.0.tar.gz" .
+      fi
+      (cd "$source_materials" && sha256sum collage-studio-1.0.0.tar.gz > collage-studio-1.0.0.tar.gz.sha256)
+      # Snapcraft recreates part/build on failure. Keep only toolchain/compiler
+      # caches outside that disposable tree, never in the staged package.
+      cache="$HOME/.cache/collage-studio-snap/$CRAFT_ARCH_BUILD_FOR"
+      export CARGO_HOME="$cache/cargo"
+      export RUSTUP_HOME="$cache/rustup"
+      export CARGO_TARGET_DIR="$cache/target"
       tools="$CRAFT_PART_BUILD/.build-tools"
       mkdir -p "$tools"
       curl --fail --location --retry 3 https://sh.rustup.rs -o "$tools/rustup-init.sh"
       sh "$tools/rustup-init.sh" -y --profile minimal --default-toolchain 1.94.1 --no-modify-path
       case "$CRAFT_ARCH_BUILD_FOR" in
-        amd64) bun_archive=bun-linux-x64-baseline ;;
-        arm64) bun_archive=bun-linux-aarch64 ;;
+        amd64)
+          bun_archive=bun-linux-x64-baseline
+          node_arch=x64
+          node_sha=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+          ;;
+        arm64)
+          bun_archive=bun-linux-aarch64
+          node_arch=arm64
+          node_sha=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2
+          ;;
         *) echo "Unsupported build architecture: $CRAFT_ARCH_BUILD_FOR" >&2; exit 1 ;;
       esac
       curl --fail --location --retry 3 "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/$bun_archive.zip" -o "$tools/bun.zip"
       unzip -oq "$tools/bun.zip" -d "$tools"
-      export PATH="$tools/$bun_archive:$CARGO_HOME/bin:$PATH"
+      # vue-tsc uses Node's TypeScript loader hooks; Bun's node fallback does
+      # not register .vue modules correctly in a clean core24 build environment.
+      curl --fail --location --retry 3 "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-$node_arch.tar.xz" -o "$tools/node.tar.xz"
+      printf '%s  %s\n' "$node_sha" "$tools/node.tar.xz" | sha256sum -c -
+      mkdir -p "$tools/node"
+      tar -xJf "$tools/node.tar.xz" --strip-components=1 -C "$tools/node"
+      export PATH="$tools/$bun_archive:$tools/node/bin:$CARGO_HOME/bin:$PATH"
       bun install --frozen-lockfile
-      bun run build:native
-      CARGO_TARGET_DIR="$CRAFT_PART_BUILD/.cargo-target" cargo build --locked --release --manifest-path src-tauri/Cargo.toml
+      # The embedded WASM codecs target wasm32, not the GNOME SDK's native ABI.
+      env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS bun run build:native
+      cargo build --locked --release --features tauri/custom-protocol --manifest-path src-tauri/Cargo.toml
       bun scripts/license-codecs.mjs release "$CRAFT_PART_BUILD/codec-source"
-      install -Dm755 "$CRAFT_PART_BUILD/.cargo-target/release/collage-studio" "$CRAFT_PART_INSTALL/usr/bin/collage-studio"
+      install -Dm755 "$CARGO_TARGET_DIR/release/collage-studio" "$CRAFT_PART_INSTALL/usr/bin/collage-studio"
       install -Dm644 packaging/linux/collage-studio.snap.desktop "$CRAFT_PART_INSTALL/usr/share/applications/collage-studio.desktop"
       install -Dm644 public/icons/icon-512.png "$CRAFT_PART_INSTALL/meta/gui/icon.png"
       install -Dm644 LICENSE "$CRAFT_PART_INSTALL/usr/share/licenses/collage-studio/LICENSE"
       install -Dm644 public/third-party-notices.txt "$CRAFT_PART_INSTALL/usr/share/licenses/collage-studio/third-party-notices.txt"
-      install -Dm644 codec-source/collage-studio-codec-corresponding-source.tar.gz "$CRAFT_PART_INSTALL/usr/share/licenses/collage-studio/collage-studio-codec-corresponding-source.tar.gz"
-      install -Dm644 codec-source/collage-studio-codec-corresponding-source.tar.gz.sha256 "$CRAFT_PART_INSTALL/usr/share/licenses/collage-studio/collage-studio-codec-corresponding-source.tar.gz.sha256"
+      install -Dm644 "$source_materials/collage-studio-1.0.0.tar.gz" "$CRAFT_PART_INSTALL/usr/share/licenses/collage-studio/collage-studio-1.0.0.tar.gz"
+      install -Dm644 "$source_materials/collage-studio-1.0.0.tar.gz.sha256" "$CRAFT_PART_INSTALL/usr/share/licenses/collage-studio/collage-studio-1.0.0.tar.gz.sha256"
+      install -Dm644 "$CRAFT_PART_BUILD/codec-source/collage-studio-codec-corresponding-source.tar.gz" "$CRAFT_PART_INSTALL/usr/share/licenses/collage-studio/collage-studio-codec-corresponding-source.tar.gz"
+      install -Dm644 "$CRAFT_PART_BUILD/codec-source/collage-studio-codec-corresponding-source.tar.gz.sha256" "$CRAFT_PART_INSTALL/usr/share/licenses/collage-studio/collage-studio-codec-corresponding-source.tar.gz.sha256"
     stage:
       - usr/bin/collage-studio
       - usr/share/applications/collage-studio.desktop

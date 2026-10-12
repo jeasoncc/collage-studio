@@ -65,6 +65,11 @@
   <br /><sub>实际 Android 36 模拟器：调试签名 APK，内嵌前端；已通过系统文件选择器保存 PNG。不是实体手机或商店上架证明。</sub>
 </p>
 
+<p align="center">
+  <img src="docs/images/linux-snap.webp" width="1180" alt="Ubuntu 24.04 独立虚拟机中真实运行的 strict Snap 三照片编辑器" />
+  <br /><sub>实际 Linux Snap：Ubuntu 24.04 / amd64，AppArmor enforce；选择三张示例照片进入编辑器并自动保存。不是设计稿或 Snap Store 上架证明。</sub>
+</p>
+
 ## 快速开始
 
 ### 直接使用
@@ -210,6 +215,8 @@ yay -S collage-studio
 ### Snap Store
 
 [Snap 配置](snap/snapcraft.yaml) 使用 `core24`、GNOME 桌面 SDK 与 strict confinement，不包含后台守护进程。
+
+已在独立 Ubuntu 24.04 虚拟机中用 Snapcraft 9.1.4 实际构包、安装并验证 `amd64`：严格隔离标签为 enforce，真实首页、三照片编辑器和自动保存均通过。`arm64` 配置存在，但尚未实机构包或运行验证。
 
 在有 Snapcraft 8+、已初始化 LXD 的构建环境执行：
 

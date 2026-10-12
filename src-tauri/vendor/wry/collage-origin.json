@@ -1,0 +1,19 @@
+{
+  "package": "wry",
+  "version": "0.57.0",
+  "repository": "https://github.com/tauri-apps/wry",
+  "upstreamArchive": "https://static.crates.io/crates/wry/wry-0.57.0.crate",
+  "upstreamArchiveSha256": "a819957a01b3119af85e638a38d242af76dbc87d130dca67bfd0441072e21ff0",
+  "publishedSourceMetadata": ".cargo_vcs_info.json",
+  "licenses": ["LICENSE-APACHE", "LICENSE-MIT"],
+  "localChanges": [
+    {
+      "file": "src/wkwebview/mod.rs",
+      "function": "platform_webview_version",
+      "change": "Resolve the actual WKWebView class's NSBundle with bundleForClass instead of bundleWithIdentifier and remove the obsolete missing-identifier branch. Preserve the real CFBundleVersion lookup and existing error handling.",
+      "reason": "The iOS 26.2 simulator trapped in CFRelease(NULL) during NSBundle identifier lookup's framework-image traversal before the Tauri application could initialize.",
+      "evidence": "https://github.com/jeasoncc/collage-studio/actions/runs/38221492520/job/114718567720",
+      "apiContract": "https://developer.apple.com/documentation/foundation/bundle/init(for:)"
+    }
+  ]
+}

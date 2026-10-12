@@ -237,7 +237,7 @@ jobs:
           if (match) {
             const debuggerResult = spawnSync("xcrun", [
               "lldb", "--batch", "-o", `process attach --pid ${match[1]}`,
-              "-o", "continue", "-o", "thread backtrace all", "-o", "process kill"
+              "-o", "continue", "-k", "thread backtrace all", "-k", "process kill"
             ], { encoding: "utf8", timeout: 90000, maxBuffer: 8 * 1024 * 1024 });
             output += `${debuggerResult.stdout ?? ""}\n${debuggerResult.stderr ?? ""}\n`;
             if (debuggerResult.error) output += `${debuggerResult.error.message}\n`;
