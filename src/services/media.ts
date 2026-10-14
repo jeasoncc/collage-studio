@@ -17,6 +17,15 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav', ogg: 'audio/ogg', aac: 'audio/aac', flac: 'audio/flac',
 };
 export interface ImportFailure { name: string; message: string; }
+export interface MediaImportProgress {
+  index: number;
+  name: string;
+  stage: 'reading' | 'processing' | 'complete' | 'error';
+  progress: number;
+  message: string;
+  asset?: MediaAsset;
+}
+type AssetProgress = (stage: 'reading' | 'processing', progress: number, message: string) => void;
 const importFailures = new WeakMap<MediaAsset[], ImportFailure[]>();
 export function getImportFailures(assets: MediaAsset[]): ImportFailure[] {
   return importFailures.get(assets) ?? [];
@@ -100,8 +109,29 @@ export async function resizeAssetImage(asset: MediaAsset, maxSide: number): Prom
   try { return await resizeImage(image, maxSide); }
   finally { image.src = ''; }
 }
-async function inspectGif(blob: Blob): Promise<GifPlayback> {
-  const gif = parseGIF(await blob.arrayBuffer());
+function readGifBytes(blob: Blob, onProgress?: AssetProgress): Promise<ArrayBuffer> {
+  if (!onProgress) return blob.arrayBuffer();
+  const { promise, resolve, reject } = Promise.withResolvers<ArrayBuffer>();
+  const reader = new FileReader();
+  const cleanup = () => { reader.onload = reader.onerror = reader.onabort = reader.onprogress = null; };
+  reader.onprogress = (event) => {
+    if (event.lengthComputable && event.total > 0) onProgress('reading', 0.4 + 0.15 * Math.min(1, event.loaded / event.total), '正在读取 GIF 动画数据…');
+  };
+  reader.onload = () => {
+    const result = reader.result;
+    cleanup();
+    if (result instanceof ArrayBuffer) resolve(result);
+    else reject(new Error('无法读取 GIF 动画数据。'));
+  };
+  reader.onerror = () => { const error = reader.error; cleanup(); reject(error ?? new Error('无法读取 GIF 动画数据。')); };
+  reader.onabort = () => { cleanup(); reject(new Error('GIF 动画数据读取中断。')); };
+  reader.readAsArrayBuffer(blob);
+  return promise;
+}
+async function inspectGif(blob: Blob, onProgress?: AssetProgress): Promise<GifPlayback> {
+  const bytes = await readGifBytes(blob, onProgress);
+  onProgress?.('processing', 0.55, 'GIF 数据已读取，正在解码动画帧…');
+  const gif = parseGIF(bytes);
   validateDimensions(gif.lsd.width, gif.lsd.height);
   let totalPixels = 0;
   for (const frame of gif.frames) {
@@ -181,13 +211,14 @@ function waitForMedia(element: HTMLMediaElement, event: 'loadedmetadata' | 'load
   action();
   return promise;
 }
-async function mediaMetadata(src: string, blob: Blob, kind: 'video' | 'audio') {
+async function mediaMetadata(src: string, blob: Blob, kind: 'video' | 'audio', onProgress?: AssetProgress) {
   const element = document.createElement(kind);
   element.preload = 'auto';
   element.muted = true;
   if (element instanceof HTMLVideoElement) element.playsInline = true;
   try {
     await waitForMedia(element, kind === 'video' ? 'loadeddata' : 'loadedmetadata', () => { element.src = src; element.load(); });
+    onProgress?.('processing', 0.45, kind === 'video' ? '视频首帧已解码，正在读取时长…' : '音频信息已读取，正在确认时长…');
     let duration = element.duration;
     if (!Number.isFinite(duration) || duration <= 0) {
       // Recorded WebM often omits container duration; demux packets instead of rejecting a valid clip.
@@ -195,24 +226,32 @@ async function mediaMetadata(src: string, blob: Blob, kind: 'video' | 'audio') {
       try { duration = await input.computeDuration(); } finally { input.dispose(); }
     }
     if (!Number.isFinite(duration) || duration <= 0) throw new Error('音视频没有有效时长，无法导入。');
+    onProgress?.('processing', 0.65, '音视频时长已确认，正在生成缩略图…');
     if (element instanceof HTMLVideoElement) {
       validateDimensions(element.videoWidth, element.videoHeight);
-      return { width: element.videoWidth, height: element.videoHeight, duration, thumbnail: await thumbnail(element, element.videoWidth, element.videoHeight) };
+      const preview = await thumbnail(element, element.videoWidth, element.videoHeight);
+      onProgress?.('processing', 0.85, '视频缩略图已生成。');
+      return { width: element.videoWidth, height: element.videoHeight, duration, thumbnail: preview };
     }
     const preview = canvas(320, 200);
-    const ctx = context2d(preview);
-    ctx.fillStyle = '#f5e9ff'; ctx.fillRect(0, 0, 320, 200);
-    ctx.fillStyle = '#8b5cf6'; ctx.font = 'bold 80px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('♫', 160, 118);
-    ctx.font = '16px sans-serif'; ctx.fillText(`${Math.floor(duration / 60)}:${Math.floor(duration % 60).toString().padStart(2, '0')}`, 160, 162);
-    const audioThumbnail = URL.createObjectURL(await canvasToBlob(preview));
-    preview.width = preview.height = 0;
-    return { width: 0, height: 0, duration, thumbnail: audioThumbnail };
+    try {
+      const ctx = context2d(preview);
+      ctx.fillStyle = '#f5e9ff'; ctx.fillRect(0, 0, 320, 200);
+      ctx.fillStyle = '#8b5cf6'; ctx.font = 'bold 80px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('♫', 160, 118);
+      ctx.font = '16px sans-serif'; ctx.fillText(`${Math.floor(duration / 60)}:${Math.floor(duration % 60).toString().padStart(2, '0')}`, 160, 162);
+      const audioThumbnail = URL.createObjectURL(await canvasToBlob(preview));
+      onProgress?.('processing', 0.85, '音频缩略图已生成。');
+      return { width: 0, height: 0, duration, thumbnail: audioThumbnail };
+    } finally { preview.width = preview.height = 0; }
   } finally {
     element.pause(); element.removeAttribute('src'); element.load();
   }
 }
 
-export async function createAsset(input: Blob, name: string, requestedKind?: MediaAsset['kind']): Promise<MediaAsset> {
+export function createAsset(input: Blob, name: string, requestedKind?: MediaAsset['kind']): Promise<MediaAsset> {
+  return buildAsset(input, name, requestedKind);
+}
+async function buildAsset(input: Blob, name: string, requestedKind?: MediaAsset['kind'], onProgress?: AssetProgress): Promise<MediaAsset> {
   if (!input.size) throw new Error('文件为空，无法导入。');
   if (input.size > MAX_BYTES) throw new Error('单个素材不能超过 150 MB，请先压缩。');
   const extension = name.split('.').pop()?.toLowerCase() ?? '';
@@ -221,7 +260,9 @@ export async function createAsset(input: Blob, name: string, requestedKind?: Med
   let blob = input;
   if (mime === 'image/heic' || mime === 'image/heif') {
     try {
+      onProgress?.('processing', 0, '正在转换 HEIC 图片…');
       blob = await heicToPng(blob);
+      onProgress?.('processing', 0.25, 'HEIC 已转换为 PNG，正在读取图像…');
       mime = 'image/png';
     } catch { throw new Error('HEIC 转换失败，请从相册另存为 JPEG 后重试。'); }
   }
@@ -230,47 +271,76 @@ export async function createAsset(input: Blob, name: string, requestedKind?: Med
   if ((kind === 'audio' && !mime.startsWith('audio/')) || (kind === 'video' && !mime.startsWith('video/'))) throw new Error('文件格式与素材类型不匹配。');
   if (mime === 'image/svg+xml' && kind === 'sticker') blob = await sanitizeSticker(blob);
   if (blob.type !== mime) blob = new Blob([blob], { type: mime });
+  onProgress?.('reading', 0.05, '文件格式已确认，正在解码…');
   const src = URL.createObjectURL(blob);
   let thumbnailUrl = '';
+  let imageAsset: MediaAsset | undefined;
   try {
     if (kind === 'video' || kind === 'audio') {
-      const metadata = await mediaMetadata(src, blob, kind);
+      const metadata = await mediaMetadata(src, blob, kind, onProgress);
       thumbnailUrl = metadata.thumbnail;
       return { id: crypto.randomUUID(), name, kind, mime, blob, src, ...metadata };
     }
     const image = await loadImage(src);
     try {
       validateDimensions(image.naturalWidth, image.naturalHeight);
-      const gif = mime === 'image/gif' ? await inspectGif(blob) : null;
-      const asset: MediaAsset = { id: crypto.randomUUID(), name, kind, mime, width: image.naturalWidth, height: image.naturalHeight, duration: gif && gif.frames.length > 1 ? gif.duration : 0, blob, src, thumbnail: '' };
+      onProgress?.('processing', 0.4, '图像已解码，正在处理图片…');
+      const gif = mime === 'image/gif' ? await inspectGif(blob, onProgress) : null;
+      onProgress?.('processing', 0.65, gif ? 'GIF 动画帧已解码，正在生成缩略图…' : '图像尺寸已确认，正在生成缩略图…');
+      const asset: MediaAsset = imageAsset = { id: crypto.randomUUID(), name, kind, mime, width: image.naturalWidth, height: image.naturalHeight, duration: gif && gif.frames.length > 1 ? gif.duration : 0, blob, src, thumbnail: '' };
       if (gif) animatedImages.set(asset, gif);
       thumbnailUrl = await thumbnail(gif ? compositeGif(gif, 0) : image, asset.width, asset.height);
       asset.thumbnail = thumbnailUrl;
+      onProgress?.('processing', 0.85, '图片缩略图已生成。');
       if (!gif && Math.max(asset.width, asset.height) > PREVIEW_SIDE) {
         const preview = await resizeImage(image, PREVIEW_SIDE);
+        onProgress?.('processing', 0.9, '显示预览已缩小，正在编码…');
         try { imagePreviews.set(asset, URL.createObjectURL(await canvasToBlob(preview))); }
         finally { preview.width = preview.height = 0; }
+        onProgress?.('processing', 0.95, '显示预览已生成。');
       }
       return asset;
     } finally { image.src = ''; }
   } catch (error) {
-    URL.revokeObjectURL(src);
-    if (thumbnailUrl) URL.revokeObjectURL(thumbnailUrl);
+    if (imageAsset) disposeAsset(imageAsset);
+    else {
+      URL.revokeObjectURL(src);
+      if (thumbnailUrl) URL.revokeObjectURL(thumbnailUrl);
+    }
     throw error;
   }
 }
-export async function importMedia(files: File[] | FileList, onProgress?: ProgressCallback): Promise<MediaAsset[]> {
+/**
+ * Per-file progress measures completed milestones, not elapsed time:
+ * format 5%, HEIC conversion 25%, image decode 40% (media metadata 45%),
+ * validated frames/duration 65%, thumbnail 85%, optional preview resize/encode 90%/95%.
+ * GIF bytes use the existing required read, scaled to 40–55%; opaque browser/HEIC reads
+ * only report milestones. Only a successfully returned asset receives complete/100%.
+ * Observed assets share ownership with the returned array; do not dispose them twice.
+ */
+export async function importMedia(files: File[] | FileList, onProgress?: ProgressCallback, onFileProgress?: (event: MediaImportProgress) => void): Promise<MediaAsset[]> {
   const list = Array.from(files);
   const assets: MediaAsset[] = [];
   const failures: ImportFailure[] = [];
   for (const [index, file] of list.entries()) {
     onProgress?.(index / list.length, `正在本地读取 ${file.name}…`);
-    try { assets.push(await createAsset(file, file.name)); }
+    let progress = 0;
+    const report: AssetProgress | undefined = onFileProgress ? (stage, value, message) => {
+      progress = Math.max(progress, Math.min(0.99, value));
+      onFileProgress({ index, name: file.name, stage, progress, message });
+    } : undefined;
+    report?.('reading', 0, `正在本地读取 ${file.name}…`);
+    let asset: MediaAsset;
+    try { asset = await buildAsset(file, file.name, undefined, report); }
     catch (error) {
       const message = error instanceof Error ? error.message : '文件无法读取。';
       failures.push({ name: file.name, message });
+      onFileProgress?.({ index, name: file.name, stage: 'error', progress, message });
       onProgress?.((index + 1) / list.length, `${file.name}：${message}`);
+      continue;
     }
+    assets.push(asset);
+    onFileProgress?.({ index, name: file.name, stage: 'complete', progress: 1, message: '已导入。', asset });
   }
   importFailures.set(assets, failures);
   if (!assets.length && failures.length) throw new AggregateError(failures.map((failure) => new Error(`${failure.name}：${failure.message}`)), failures.map((failure) => `${failure.name}：${failure.message}`).join('\n'));
