@@ -35,6 +35,11 @@ export interface PwaState {
   unavailableReason: string;
 }
 
+export interface PwaStatusHandle {
+  readonly state: Readonly<PwaState>;
+  checkForUpdates(): Promise<void>;
+}
+
 function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -86,6 +91,7 @@ export function usePwa(canUpdate: () => boolean) {
   let lastStatusCheck = 0;
   let lastCheck = 0;
   let disposed = false;
+  let cancelInstallationWait: (() => void) | undefined;
 
   const matchingWorker = (worker: ServiceWorker | null | undefined): worker is ServiceWorker => !!worker && worker.scriptURL === scriptUrl;
 
@@ -242,12 +248,46 @@ export function usePwa(canUpdate: () => boolean) {
     return registrationTask;
   }
 
-  async function checkForUpdates(force = false): Promise<void> {
-    if (!container || disposed || !state.online || registrationTask || updateTask) return;
+  function waitForInstallation(worker: ServiceWorker): Promise<void> {
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    const finish = (error?: Error) => {
+      window.clearTimeout(timer);
+      worker.removeEventListener('statechange', changed);
+      cancelInstallationWait = undefined;
+      if (error) reject(error); else resolve();
+    };
+    const changed = () => {
+      if (worker.state === 'redundant') finish(new Error('新版本资源安装失败，请检查网络与可用空间。'));
+      else if (worker.state === 'installed' || worker.state === 'activating' || worker.state === 'activated') finish();
+    };
+    const timer = window.setTimeout(() => finish(new Error('新版本资源尚未准备完成，请稍后重新检查。')), 120_000);
+    cancelInstallationWait = () => finish(new DOMException('更新检查已取消。', 'AbortError'));
+    worker.addEventListener('statechange', changed);
+    changed();
+    return promise;
+  }
+
+  async function checkForUpdates(force = false, announce = false): Promise<void> {
+    if (announce) { state.updateError = ''; state.updateNotice = ''; }
+    if (!container || disposed) {
+      if (announce && !disposed) state.updateNotice = '当前环境不支持在线检查更新。';
+      return;
+    }
+    if (!state.online) {
+      if (announce) state.updateError = '离线时无法检查更新，现有作品仍可正常编辑。';
+      return;
+    }
+    if (registrationTask) await registrationTask;
+    if (disposed) return;
+    if (updateTask) return updateTask;
     if (!force && Date.now() - lastCheck < CHECK_COOLDOWN) return;
-    if (!registration || (!registration.active && !registration.installing && !registration.waiting)) return registerWorker();
+    if (!registration || (!registration.active && !registration.installing && !registration.waiting)) await registerWorker();
+    if (!registration || disposed) return;
     syncRegistration(true);
-    if (registration.installing || state.waitingUpdate || state.updatePending) return;
+    if (state.waitingUpdate || state.updatePending) {
+      if (announce) state.updateNotice = '新版本已准备好，点「更新并刷新」即可启用。';
+      return;
+    }
     if (!state.offlineReady) {
       state.preparation = 'preparing';
       state.preparationError = '';
@@ -257,12 +297,16 @@ export function usePwa(canUpdate: () => boolean) {
     lastCheck = Date.now();
     updateTask = (async () => {
       try {
-        await registration!.update();
-        if (!disposed) {
-          syncRegistration();
-          if (!state.offlineReady && !registration?.active && !registration?.installing && !registration?.waiting) {
-            preparationFailed('离线资源未能安装。请检查网络和可用存储空间后重试。');
-          }
+        if (!registration!.installing) await registration!.update();
+        if (disposed) return;
+        const installing = registration!.installing;
+        if (installing) await waitForInstallation(installing);
+        if (disposed) return;
+        syncRegistration(true);
+        if (!state.offlineReady && !registration?.active && !registration?.installing && !registration?.waiting) {
+          preparationFailed('离线资源未能安装。请检查网络和可用存储空间后重试。');
+        } else if (announce && !state.updateError) {
+          state.updateNotice = state.waitingUpdate ? '新版本已准备好，点「更新并刷新」即可启用。' : '当前已是最新版本。';
         }
       } catch (error) {
         if (!disposed) preparationFailed(`检查或准备更新失败：${errorDetail(error)}`);
@@ -421,6 +465,7 @@ export function usePwa(canUpdate: () => boolean) {
 
   onBeforeUnmount(() => {
     disposed = true;
+    cancelInstallationWait?.();
     finishActivation();
     closeStatusRequest();
     window.clearInterval(checkTimer);

@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { AlertCircle, CheckCircle2, Download, Info, LoaderCircle, RefreshCw, WifiOff } from 'lucide-vue-next';
 import AppDialog from './AppDialog.vue';
-import { usePwa } from '../services/pwa';
+import { usePwa, type PwaStatusHandle } from '../services/pwa';
 import { isNativeApp } from '../services/native';
 
 const props = defineProps<{ allowUpdate: boolean }>();
@@ -10,7 +10,8 @@ const installHelpOpen = ref(false);
 const installActionPending = ref(false);
 const updateDeferred = ref(false);
 const safeToUpdate = computed(() => props.allowUpdate && !installHelpOpen.value && !installActionPending.value);
-const { state, promptInstall, retryPreparation, applyUpdate } = usePwa(() => safeToUpdate.value);
+const { state, promptInstall, retryPreparation, checkForUpdates, applyUpdate } = usePwa(() => safeToUpdate.value);
+defineExpose<PwaStatusHandle>({ state, checkForUpdates: () => checkForUpdates(true, true) });
 const native = isNativeApp();
 const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 const isAndroid = /Android/.test(navigator.userAgent);
@@ -86,7 +87,7 @@ function update() {
         <p>在支持安装的桌面浏览器中，点击地址栏的安装图标，或在浏览器菜单选择「安装拼贴时光」／「将此页面安装为应用」。</p>
         <p>如果没有安装入口，可用 Chrome 或 Edge 打开同一地址；不支持安装的浏览器仍可直接使用网页。</p>
       </template>
-      <p class="form-note">请保持联网，直到页面显示「离线已就绪」。离线时可编辑本地照片、使用已缓存素材并导出图片；AI 抠图模型需要先在联网时下载。作品和照片仍保存在当前浏览器的本地存储中，安装不会迁移它们。</p>
+      <p class="form-note">请保持联网，直到页面显示「离线已就绪」。离线时可编辑本地照片、使用已缓存素材并导出图片。作品和照片仍保存在当前浏览器的本地存储中，安装不会迁移它们。</p>
       <p v-if="state.version" class="pwa-notice" data-pwa-version>离线服务版本：{{ state.version }}</p>
       <div class="dialog-actions"><button type="button" class="primary-button pwa-control" data-pwa-action="close-install-help" @click="installHelpOpen = false">知道了</button></div>
     </div>
