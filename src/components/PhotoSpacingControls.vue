@@ -46,7 +46,7 @@ function setInset(value: number) {
       <div class="spacing-label"><Scan :size="17" aria-hidden="true" /><strong>照片与画布</strong></div>
       <PanelRange label="照片间距" :value="document.gap" :min="0" :max="maxGap" unit="px" @input="value => patch({ gap: value })" @commit="checkpoint" />
       <PanelRange label="画布留白" :value="document.padding" :min="0" :max="maxPadding" unit="px" @input="value => patch({ padding: value })" @commit="checkpoint" />
-      <p class="spacing-help">间距改变照片之间的空隙；留白改变整幅画面的外缘。{{ document.mode === 'free' ? '自由排版保留照片中心与主次关系。' : document.layoutId.startsWith('long-') ? '长图保持原比例，高度随之调整。' : '' }}</p>
+      <p class="spacing-help">间距改变照片之间的空隙；留白改变整幅画面的外缘。{{ document.mode === 'free' ? '调整时保留照片中心与主次关系。' : document.layoutId.startsWith('long-') ? '高度随照片比例和间距调整。' : '' }}</p>
     </div>
     <div class="spacing-section">
       <div class="spacing-label"><RectangleHorizontal :size="17" aria-hidden="true" /><strong>相框内衬</strong><div class="frame-shortcuts" aria-label="相框内衬样式"><button type="button" :aria-pressed="!frameEnabled" @click="frame({ kind: 'none', insetRatio: 0, footerRatio: 0, shadowRatio: 0 }, true)">无内衬</button><button type="button" :aria-pressed="frameEnabled" @click="frame({ kind: 'paper', insetRatio: document.photoFrame.insetRatio || .03, footerRatio: 0 }, true)">相纸</button></div></div>

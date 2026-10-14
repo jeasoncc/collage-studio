@@ -20,7 +20,7 @@ export function textPhotos(doc: EditorDocument, assets: Record<string, MediaAsse
     if (!asset || (asset.kind !== 'image' && asset.kind !== 'video')) return;
     photos.push({ id, ...rect, rotation, content: photoFrameGeometry(rect.width, rect.height, doc.photoFrame, asset.width, asset.height) });
   };
-  if (doc.mode === 'grid') for (const slot of doc.slots) add(slot.id, slot.assetId, slotRect(doc, slot));
+  if (doc.mode === 'grid') for (const slot of doc.slots) if (slot.visible) add(slot.id, slot.assetId, slotRect(doc, slot));
   for (const item of doc.elements) if (item.type === 'image' && item.visible && item.opacity > 0) add(item.id, item.assetId, item, item.rotation);
   return photos;
 }

@@ -35,7 +35,6 @@
     "@fontsource/lxgw-wenkai": "5.3.0",
     "@fontsource/ma-shan-zheng": "^5.3.1",
     "@fontsource/playfair-display": "^5.2.8",
-    "@huggingface/transformers": "^4.3.1",
     "@iconify-json/fluent-emoji-flat": "^1.2.6",
     "@iconify/utils": "^3.1.0",
     "@tauri-apps/api": "2.12.3",
@@ -52,7 +51,6 @@
     "konva": "^10.0.8",
     "lucide-vue-next": "^0.577.0",
     "mediabunny": "1.61.3",
-    "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0",
     "pica": "^9.0.1",
     "pinia": "^3.0.4",
     "reka-ui": "^2.6.0",
@@ -61,12 +59,10 @@
     "vue": "^3.5.43",
     "vue-color": "3.3.3",
     "vue-konva": "^4.0.1",
-    "workbox-cacheable-response": "^7.4.1",
     "workbox-core": "^7.4.1",
     "workbox-precaching": "^7.4.1",
     "workbox-range-requests": "^7.4.1",
     "workbox-routing": "^7.4.1",
-    "workbox-strategies": "^7.4.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {

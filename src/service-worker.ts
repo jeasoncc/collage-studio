@@ -1,8 +1,6 @@
-import { CacheableResponsePlugin } from 'workbox-cacheable-response';
 import { PrecacheController, PrecacheRoute } from 'workbox-precaching';
 import { createPartialResponse, RangeRequestsPlugin } from 'workbox-range-requests';
 import { registerRoute } from 'workbox-routing';
-import { CacheFirst } from 'workbox-strategies';
 
 declare let self: ServiceWorkerGlobalScope;
 declare const __COLLAGE_PWA_BUILD_ID__: string;
@@ -14,12 +12,11 @@ if (scopeUrl.origin !== self.location.origin || scopeUrl.pathname !== '/' || !['
 const cachePrefix = 'collage-studio-pwa:/';
 const precacheName = `${cachePrefix}:precache`;
 const previousName = `${cachePrefix}:previous-assets`;
-const runtimeName = `${cachePrefix}:runtime`;
 const ownsUrl = (url: URL) => url.origin === scopeUrl.origin && url.pathname.startsWith(scopeUrl.pathname);
 const entries = self.__WB_MANIFEST;
 for (const entry of entries) {
   const url = new URL(typeof entry === 'string' ? entry : entry.url, self.location.href);
-  if (!ownsUrl(url) || url.pathname.endsWith('.wasm')) throw new Error('离线资源超出拼图范围。');
+  if (!ownsUrl(url)) throw new Error('离线资源超出拼图范围。');
 }
 
 const precache = new PrecacheController({ cacheName: precacheName, plugins: [new RangeRequestsPlugin()] });
@@ -27,6 +24,7 @@ precache.addToCacheList(entries);
 self.addEventListener('install', event => { void precache.install(event); });
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
+    await caches.delete(`${cachePrefix}:runtime`);
     const current = await caches.open(precacheName);
     const required = new Set(precache.getURLsToCacheKeys().values());
     const obsolete = (await current.keys()).filter(request => !required.has(request.url));
@@ -50,17 +48,6 @@ registerRoute(
   precache.createHandlerBoundToURL(`${scopeUrl.href}index.html`),
 );
 registerRoute(new PrecacheRoute(precache, { cleanURLs: false }));
-const runtime = new CacheFirst({
-  cacheName: runtimeName,
-  plugins: [new CacheableResponsePlugin({ statuses: [200] }), new RangeRequestsPlugin(), {
-    async cacheDidUpdate() {
-      const cache = await caches.open(runtimeName);
-      const requests = await cache.keys();
-      // Only ONNX runtime files enter this cache; retain at most two runtime versions.
-      for (const request of requests.slice(0, Math.max(0, requests.length - 2))) await cache.delete(request);
-    },
-  }],
-});
 registerRoute(
   ({ url }) => ownsUrl(url) && url.pathname.startsWith(`${scopeUrl.pathname}assets/`),
   async context => {
@@ -69,8 +56,6 @@ registerRoute(
       const response = await previous.match(context.request, { ignoreSearch: true });
       if (response) return context.request.headers.has('range') ? createPartialResponse(context.request, response) : response;
     }
-    // AI weights keep Transformers.js's own on-demand cache; never route external requests here.
-    if (context.url.pathname.endsWith('.wasm')) return runtime.handle(context);
     return fetch(context.request);
   },
 );

@@ -12,7 +12,7 @@
   "app": {
     "windows": [{ "label": "main", "title": "拼贴时光", "width": 1180, "height": 820, "minWidth": 360, "minHeight": 540 }],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost blob: data: https:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self' blob: ipc: http://ipc.localhost https://huggingface.co https://*.huggingface.co https://*.hf.co; worker-src 'self' blob:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'",
+      "csp": "default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost blob: data: https:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self' blob: ipc: http://ipc.localhost; worker-src 'self' blob:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'",
       "capabilities": ["local-app"]
     }
   },

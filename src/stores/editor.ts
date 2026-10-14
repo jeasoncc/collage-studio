@@ -4,6 +4,7 @@ import { useManualRefHistory } from '@vueuse/core';
 import { createCrop, createDocument, createDrawing, createElementBase, createFilter, createPhotoFrame, slotRect } from '../defaults';
 import { layouts, MAX_COLLAGE_PHOTOS, recommendLayout } from '../catalog/layouts';
 import { longComposition } from '../catalog/longComposition';
+import { photoPostersForCount } from '../catalog/photoPosters';
 import { collageLookDocument } from '../catalog/looks';
 import type { CollageLook } from '../catalog/looks';
 import { photoTextStyles, photoTextStylePatch } from '../catalog/photoText';
@@ -58,11 +59,28 @@ function validatePhotos(items: readonly MediaAsset[]) {
 function photoSlots(layout: LayoutPreset, photos: readonly ImageElement[]): CollageSlot[] {
   return layout.slots.map((rect, index) => {
     const photo = photos[index];
-    return { ...rect, id: photo?.id ?? crypto.randomUUID(), assetId: photo?.assetId ?? null, crop: clone(photo?.crop ?? createCrop()), filter: clone(photo?.filter ?? createFilter()), shape: photo?.shape ?? 'rect', trimStart: photo?.trimStart ?? 0, trimEnd: photo?.trimEnd ?? null, muted: photo?.muted ?? false };
+    return { ...rect, id: photo?.id ?? crypto.randomUUID(), assetId: photo?.assetId || null, crop: clone(photo?.crop ?? createCrop()), filter: clone(photo?.filter ?? createFilter()), shape: photo?.shape ?? 'rect', visible: photo?.visible ?? true, locked: photo?.locked ?? false, trimStart: photo?.trimStart ?? 0, trimEnd: photo?.trimEnd ?? null, muted: photo?.muted ?? false };
   });
 }
 function slotPhoto(doc: EditorDocument, slot: CollageSlot): ImageElement {
-  return imageElement(slot.assetId ?? '', { ...slotRect(doc, slot), id: slot.id, crop: clone(slot.crop), filter: clone(slot.filter), shape: slot.shape, cornerRadius: doc.cornerRadius, trimStart: slot.trimStart ?? 0, trimEnd: slot.trimEnd ?? null, muted: slot.muted ?? false });
+  return imageElement(slot.assetId ?? '', { ...slotRect(doc, slot), id: slot.id, crop: clone(slot.crop), filter: clone(slot.filter), shape: slot.shape, visible: slot.visible, locked: slot.locked, cornerRadius: doc.cornerRadius, trimStart: slot.trimStart ?? 0, trimEnd: slot.trimEnd ?? null, muted: slot.muted ?? false });
+}
+function arrangePosterPhotos(doc: EditorDocument, photos: readonly ImageElement[]): boolean {
+  const style = doc.mode === 'free' ? doc.layoutId.match(/^(poster-.+)-\d+$/)?.[1] : undefined;
+  if (!style) return false;
+  if (!photos.length) { doc.layoutId = `${style}-0`; return true; }
+  const poster = photoPostersForCount(photos.length).find(template => template.layoutId === `${style}-${photos.length}`);
+  if (!poster) return false;
+  doc.layoutId = poster.layoutId;
+  for (let index = 0; index < photos.length; index++) {
+    const photo = photos[index]!, frame = poster.photoFrames![index]!;
+    photo.x = frame.x * doc.width; photo.y = frame.y * doc.height;
+    photo.width = frame.width * doc.width; photo.height = frame.height * doc.height;
+    photo.rotation = frame.rotation ?? 0; photo.shape = frame.shape ?? 'rect';
+    photo.borderWidth = frame.borderWidth ?? 0; photo.borderColor = frame.borderColor ?? '#ffffff';
+    photo.cornerRadius = doc.cornerRadius;
+  }
+  return true;
 }
 
 export const useEditorStore = defineStore('editor', () => {
@@ -79,13 +97,13 @@ export const useEditorStore = defineStore('editor', () => {
     const id = selectedSlot.value?.assetId ?? (selected.value?.type === 'image' ? selected.value.assetId : null);
     return id ? assets.value[id] ?? null : null;
   });
-  const fingerprint = () => JSON.stringify({ ...project.value, activePageId: '' });
+  const fingerprint = (value = project.value) => JSON.stringify({ ...value, activePageId: '' });
   const assetFingerprint = () => JSON.stringify(Object.values(assets.value).map(asset => ({ id: asset.id, name: asset.name, kind: asset.kind, mime: asset.mime, width: asset.width, height: asset.height, duration: asset.duration })));
   let savedProject = fingerprint();
   let savedAssets = assetFingerprint();
   const savedGeneration = ref(0);
   const dirty = computed(() => { void savedGeneration.value; return fingerprint() !== savedProject || assetFingerprint() !== savedAssets; });
-  const history = useManualRefHistory(project, { capacity: 100, clone });
+  const history = useManualRefHistory<EditorProject>(project, { capacity: 100, clone });
   let committed = fingerprint();
   const canUndo = computed(() => history.canUndo.value || (!cropEditing.value && fingerprint() !== committed));
   const canRedo = computed(() => history.canRedo.value && (cropEditing.value || fingerprint() === committed));
@@ -99,6 +117,24 @@ export const useEditorStore = defineStore('editor', () => {
     document.value.updatedAt = Date.now();
     revision.value++;
     if (commit) checkpoint();
+  }
+  function setTextDraft(value: string) {
+    const text = value.slice(0, 2000);
+    const doc = document.value;
+    if (doc.textDraft === text) return;
+    const updatedAt = Date.now();
+    doc.textDraft = text; doc.updatedAt = updatedAt; revision.value++;
+    // Draft typing is persisted, but is not a canvas undo step. Carry the latest
+    // input across existing history so undo/redo cannot discard unadded text.
+    const updateDraft = (snapshot: EditorProject) => {
+      const page = snapshot.pages.find(page => page.id === doc.id);
+      if (page) { page.textDraft = text; page.updatedAt = updatedAt; }
+    };
+    updateDraft(history.last.value.snapshot);
+    for (const record of history.undoStack.value) updateDraft(record.snapshot);
+    for (const record of history.redoStack.value) updateDraft(record.snapshot);
+    committed = fingerprint(history.last.value.snapshot);
+    if (cropSession.value?.pageId === doc.id) cropSession.value.updatedAt = updatedAt;
   }
   function select(next: Selection) {
     selection.value = next && (next.kind === 'slot' ? document.value.mode === 'grid' && document.value.slots.some(slot => slot.id === next.id) : document.value.elements.some(element => element.id === next.id)) ? { ...next } : null;
@@ -138,8 +174,8 @@ export const useEditorStore = defineStore('editor', () => {
   function initializeCollage(items: MediaAsset[], setup: CollageSetup) {
     validatePhotos(items);
     const metadata = validateAssets(items);
-    if (!['grid', 'long', 'free'].includes(setup.mode) || !Number.isFinite(setup.width) || !Number.isFinite(setup.height) || setup.width <= 0 || setup.height <= 0) throw new Error('请选择有效的拼图模式与画布尺寸。');
-    if (setup.mode !== 'long' && (setup.width < 16 || setup.height < 16 || setup.width > 8192 || setup.height > 8192)) throw new Error('画布尺寸须在 16 至 8192 像素之间。');
+    if (!Number.isFinite(setup.width) || !Number.isFinite(setup.height) || setup.width <= 0 || setup.height <= 0) throw new Error('请选择有效的画布尺寸。');
+    if (setup.width < 16 || setup.height < 16 || setup.width > 8192 || setup.height > 8192) throw new Error('画布尺寸须在 16 至 8192 像素之间。');
     const next = blankProject();
     const doc = next.pages[0]!;
     doc.width = setup.width; doc.height = setup.height;
@@ -170,16 +206,9 @@ export const useEditorStore = defineStore('editor', () => {
           doc.elements = [...underlays, ...pictures, ...overlays];
         }
       }
-    } else if (setup.mode === 'long') {
-      const long = longComposition(items, setup.width, { padding: 0, gap: 0, cornerRadius: 0, photoFrame: doc.photoFrame });
-      Object.assign(doc, long);
-      doc.slots = photoSlots({ id: long.layoutId, name: '原比例长拼', count: items.length, slots: long.slots }, photos);
     } else {
       const layout = recommendLayout(items, doc)!;
       doc.layoutId = layout.id; doc.slots = photoSlots(layout, photos);
-      if (setup.mode === 'free') {
-        doc.elements = doc.slots.map(slot => slotPhoto(doc, slot)); doc.slots = []; doc.mode = 'free';
-      }
     }
     const validated = validateProject(next);
     validateReferences(validated, metadata);
@@ -190,7 +219,7 @@ export const useEditorStore = defineStore('editor', () => {
   }
   function setCollagePhotos(entries: readonly PhotoSelectionEntry[], newAssets: MediaAsset[] = []) {
     if (cropEditing.value) throw new Error('请先完成或取消当前照片裁剪。');
-    if (entries.length < 1 || entries.length > MAX_COLLAGE_PHOTOS || new Set(entries.map(entry => entry.id)).size !== entries.length) throw new Error(`请选择 1 至 ${MAX_COLLAGE_PHOTOS} 个不重复的照片位置。`);
+    if (entries.length > MAX_COLLAGE_PHOTOS || new Set(entries.map(entry => entry.id)).size !== entries.length) throw new Error(`请选择 0 至 ${MAX_COLLAGE_PHOTOS} 个不重复的照片位置。`);
     const doc = document.value;
     const sources = photoSources();
     const imported: Record<string, MediaAsset> = {};
@@ -217,30 +246,67 @@ export const useEditorStore = defineStore('editor', () => {
       if (!asset) throw new Error('素材不存在，请重新导入。');
       return asset;
     });
-    validatePhotos(orderedAssets);
+    if (orderedAssets.length) validatePhotos(orderedAssets);
     validateAssets(selectedImports);
+    if (!selectedImports.length && entries.length === sources.length && entries.every((entry, index) => entry.id === sources[index]!.id)) return;
+    if (isPoster() && (photos.length !== sources.length || doc.elements.some(element => element.type === 'image' && !element.assetId && element.locked))) guardPosterChange();
+    for (const [index, photo] of sources.entries()) {
+      if (photo.locked && entries.findIndex(entry => entry.id === photo.id) !== index) throw new Error('请先解锁需要移除或重排的照片位置。');
+    }
     const nextDoc = clone(doc);
+    const sourceIds = new Set(sources.map(photo => photo.id));
     if (doc.mode === 'grid') {
-      let layout: LayoutPreset;
       if (doc.layoutId.startsWith('long-')) {
-        const long = longComposition(orderedAssets, doc.width, doc);
-        Object.assign(nextDoc, long);
-        layout = { id: long.layoutId, name: '原比例长拼', count: orderedAssets.length, slots: long.slots };
+        if (photos.length) {
+          const long = longComposition(orderedAssets, doc.width, doc);
+          Object.assign(nextDoc, long);
+          nextDoc.slots = photoSlots({ id: long.layoutId, name: '照片排列', count: photos.length, slots: long.slots }, photos);
+        } else {
+          nextDoc.layoutId = 'long-0'; nextDoc.slots = [];
+        }
+        nextDoc.elements = nextDoc.elements.filter(item => !sourceIds.has(item.id));
       } else {
-        layout = doc.slots.length === photos.length ? { id: doc.layoutId, name: '', count: photos.length, slots: doc.slots.map(({ x, y, width, height }) => ({ x, y, width, height })) } : recommendLayout(orderedAssets, doc)!;
+        const floatingIds = new Set(doc.elements.filter(item => sourceIds.has(item.id)).map(item => item.id));
+        const slotted = photos.filter(photo => !floatingIds.has(photo.id));
+        const available = doc.slots.filter(slot => !slot.locked || !!slot.assetId);
+        if (slotted.length <= available.length) {
+          // Keep existing cells, including holes. Reordered entries use occupied
+          // cells first; imports fill unlocked holes without absorbing floating photos.
+          const positions = [...doc.slots.filter(slot => slot.assetId), ...doc.slots.filter(slot => !slot.assetId && !slot.locked)];
+          const assigned = new Map(positions.slice(0, slotted.length).map((slot, index) => [slot.id, slotted[index]!]));
+          const assignedIds = new Set(slotted.map(photo => photo.id));
+          nextDoc.slots = doc.slots.map(slot => {
+            const photo = assigned.get(slot.id);
+            if (photo) return photoSlots({ id: doc.layoutId, name: '', count: 1, slots: [slot] }, [photo])[0]!;
+            if (!slot.assetId) return clone(slot);
+            return { ...clone(slot), id: assignedIds.has(slot.id) ? crypto.randomUUID() : slot.id, assetId: null, crop: createCrop(), filter: createFilter(), trimStart: 0, trimEnd: null, muted: false };
+          });
+        } else {
+          const layout = recommendLayout(slotted.map(photo => selectedImports.find(asset => asset.id === photo.assetId) ?? assets.value[photo.assetId]!), doc)!;
+          nextDoc.layoutId = layout.id; nextDoc.slots = photoSlots(layout, slotted);
+        }
+        const floating = photos.filter(photo => floatingIds.has(photo.id));
+        let position = 0;
+        nextDoc.elements = nextDoc.elements.flatMap<SceneElement>(item => {
+          if (!floatingIds.has(item.id)) return [item];
+          const photo = floating[position++];
+          return photo ? [photo] : [];
+        });
       }
-      nextDoc.layoutId = layout.id; nextDoc.slots = photoSlots(layout, photos);
-      nextDoc.elements = nextDoc.elements.filter(item => item.type !== 'image' || assets.value[item.assetId]?.kind === 'sticker');
     } else {
-      const existingIds = new Set(sources.map(photo => photo.id));
-      const layout = recommendLayout(orderedAssets, doc)!;
-      const arranged = photoSlots(layout, photos).map(slot => slotPhoto(nextDoc, slot));
-      const pictures = photos.map((photo, index) => existingIds.has(photo.id) ? photo : arranged[index]!);
-      const lastPhotoIndex = doc.elements.reduce((last, item, index) => existingIds.has(item.id) ? index : last, -1);
+      const posterStyle = doc.layoutId.match(/^(poster-.+)-\d+$/)?.[1];
+      let pictures: ImageElement[];
+      if (arrangePosterPhotos(nextDoc, photos)) pictures = photos;
+      else {
+        const layout = photos.length ? recommendLayout(orderedAssets, doc)! : undefined;
+        const arranged = layout ? photoSlots(layout, photos).map(slot => slotPhoto(nextDoc, slot)) : [];
+        pictures = photos.map((photo, index) => sourceIds.has(photo.id) ? photo : arranged[index]!);
+      }
+      const lastPhotoIndex = doc.elements.reduce((last, item, index) => sourceIds.has(item.id) || (!!posterStyle && item.type === 'image' && !item.assetId) ? index : last, -1);
       let position = 0;
       nextDoc.elements = [];
       doc.elements.forEach((item, index) => {
-        if (existingIds.has(item.id)) {
+        if (sourceIds.has(item.id) || (!!posterStyle && item.type === 'image' && !item.assetId)) {
           const photo = pictures[position++];
           if (photo) nextDoc.elements.push(photo);
         } else nextDoc.elements.push(clone(item));
@@ -248,19 +314,57 @@ export const useEditorStore = defineStore('editor', () => {
       });
       if (lastPhotoIndex < 0) nextDoc.elements.push(...pictures);
     }
+    for (const photo of sources.filter(photo => photo.locked)) {
+      const next = nextDoc.mode === 'grid' && nextDoc.slots.some(slot => slot.id === photo.id)
+        ? slotPhoto(nextDoc, nextDoc.slots.find(slot => slot.id === photo.id)!)
+        : nextDoc.elements.find(item => item.id === photo.id);
+      if (!next || JSON.stringify(next) !== JSON.stringify(photo)) throw new Error('请先解锁需要移除或重排的照片位置。');
+    }
+    for (const slot of doc.slots.filter(slot => slot.locked && !slot.assetId)) {
+      if (JSON.stringify(nextDoc.slots.find(item => item.id === slot.id)) !== JSON.stringify(slot)) throw new Error('请先解锁需要重排的空照片位置。');
+    }
     const candidate = clone(project.value);
     candidate.pages[candidate.pages.findIndex(page => page.id === doc.id)] = nextDoc;
     const validated = validateProject(candidate);
     validateReferences(validated, validateAssets([...Object.values(assets.value).filter(asset => !selectedImports.some(item => item.id === asset.id)), ...selectedImports]));
-    if (!selectedImports.length && JSON.stringify(nextDoc) === JSON.stringify(doc)) { selection.value = null; return; }
+    if (!selectedImports.length && JSON.stringify(nextDoc) === JSON.stringify(doc)) return;
     checkpoint();
     register(selectedImports);
     project.value = validated; selection.value = null; changed();
   }
+  function isOrdinaryPhoto(element: SceneElement): element is ImageElement {
+    if (element.type !== 'image') return false;
+    const kind = assets.value[element.assetId]?.kind;
+    return kind === 'image' || kind === 'video';
+  }
+  function photoCount() {
+    let count = 0;
+    if (document.value.mode === 'grid') for (const slot of document.value.slots) if (slot.assetId) count++;
+    for (const element of document.value.elements) if (isOrdinaryPhoto(element)) count++;
+    return count;
+  }
+  function isPoster() { return document.value.mode === 'free' && document.value.layoutId.startsWith('poster-'); }
+  function guardPosterChange() {
+    if (!isPoster()) return;
+    for (const element of document.value.elements) if (element.locked && element.type === 'image' && (!element.assetId || isOrdinaryPhoto(element))) throw new Error('请先解锁需要重排的照片位置。');
+  }
+  function reflowPoster() {
+    if (!isPoster()) return;
+    if (arrangePosterPhotos(document.value, document.value.elements.filter(isOrdinaryPhoto))) document.value.elements = document.value.elements.filter(element => element.type !== 'image' || !!element.assetId);
+  }
+  function assetDestination(asset: MediaAsset, target: Selection | undefined): Selection {
+    return target === undefined ? asset.kind === 'sticker' ? null : selection.value : target;
+  }
+  function placementPhotoDelta(asset: MediaAsset, target: Selection | undefined): number {
+    if (asset.kind === 'audio') return 0;
+    const destination = assetDestination(asset, target);
+    const previous = destination?.kind === 'element' ? document.value.elements.find(element => element.id === destination.id) : undefined;
+    return (asset.kind === 'image' || asset.kind === 'video' ? 1 : 0) - (previous && isOrdinaryPhoto(previous) ? 1 : 0);
+  }
   function photoSources(): ImageElement[] {
     const doc = document.value;
     const slotPhotos = doc.mode === 'grid' ? doc.slots.filter(slot => slot.assetId).map(slot => slotPhoto(doc, slot)) : [];
-    return [...slotPhotos, ...doc.elements.filter((item): item is ImageElement => item.type === 'image' && !!item.assetId && assets.value[item.assetId]?.kind !== 'sticker').map(item => clone(item))];
+    return [...slotPhotos, ...doc.elements.filter(isOrdinaryPhoto).map(item => clone(item))];
   }
   function assignLayout(layout: LayoutPreset, photos: ImageElement[]) {
     if (photos.length > MAX_COLLAGE_PHOTOS) throw new Error(`最多支持 ${MAX_COLLAGE_PHOTOS} 张照片，请先整理照片。`);
@@ -273,9 +377,10 @@ export const useEditorStore = defineStore('editor', () => {
   }
   function longGeometry(slots: readonly CollageSlot[], incoming?: readonly MediaAsset[], presentation: Pick<EditorDocument, 'width' | 'padding' | 'gap' | 'cornerRadius' | 'photoFrame'> = document.value) {
     const photos = slots.filter(slot => slot.assetId);
+    if (!photos.length) return { width: presentation.width, height: document.value.height, padding: presentation.padding, gap: presentation.gap, cornerRadius: presentation.cornerRadius, layoutId: 'long-0', slots: [] };
     const ordered = photos.map(slot => {
       const asset = incoming?.find(item => item.id === slot.assetId) ?? assets.value[slot.assetId!];
-      if (!asset || (asset.kind !== 'image' && asset.kind !== 'video')) throw new Error('长图位置只能使用照片或视频。');
+      if (!asset || (asset.kind !== 'image' && asset.kind !== 'video')) throw new Error('照片位置只能使用照片或视频。');
       return asset;
     });
     const long = longComposition(ordered, presentation.width, presentation);
@@ -287,11 +392,13 @@ export const useEditorStore = defineStore('editor', () => {
       document.value.audio = { assetId, start: 0, end: asset.duration > 0 ? asset.duration : null, volume: 1 };
       return null;
     }
-    const destination = target === undefined ? selection.value : target;
+    const destination = assetDestination(asset, target);
+    const destinationPhoto = destination?.kind === 'slot' ? document.value.slots.find(item => item.id === destination.id) : destination?.kind === 'element' ? document.value.elements.find(item => item.id === destination.id && item.type === 'image') : null;
+    if (destinationPhoto?.locked) throw new Error('请先解锁要替换的照片位置。');
     if (document.value.mode === 'free' && (asset.kind === 'image' || asset.kind === 'video')) {
       const replacement = destination?.kind === 'element' ? document.value.elements.find(item => item.id === destination.id) : undefined;
-      const replacesPhoto = replacement?.type === 'image' && !!replacement.assetId && (assets.value[replacement.assetId]?.kind === 'image' || assets.value[replacement.assetId]?.kind === 'video');
-      if (!replacesPhoto && photoSources().length >= MAX_COLLAGE_PHOTOS) throw new Error(`最多支持 ${MAX_COLLAGE_PHOTOS} 张照片，请先整理照片。`);
+      const replacesPhoto = !!replacement && isOrdinaryPhoto(replacement);
+      if (!replacesPhoto && photoCount() >= MAX_COLLAGE_PHOTOS) throw new Error(`最多支持 ${MAX_COLLAGE_PHOTOS} 张照片，请先整理照片。`);
     }
     if (destination?.kind === 'slot' && document.value.mode === 'grid') {
       const slot = document.value.slots.find(item => item.id === destination.id);
@@ -310,7 +417,7 @@ export const useEditorStore = defineStore('editor', () => {
       }
     }
     if (document.value.mode === 'grid' && asset.kind !== 'sticker') {
-      const slot = document.value.slots.find(item => !item.assetId);
+      const slot = document.value.slots.find(item => !item.assetId && !item.locked);
       if (slot) {
         const replacement = { assetId, crop: createCrop(), filter: createFilter(), trimStart: 0, trimEnd: null, muted: false };
         if (document.value.layoutId.startsWith('long-')) Object.assign(document.value, longGeometry(document.value.slots.map(item => item.id === slot.id ? { ...item, ...replacement } : item), incoming));
@@ -320,32 +427,52 @@ export const useEditorStore = defineStore('editor', () => {
       // A full grid keeps the new original in the media library instead of covering a photo.
       return null;
     }
-    const frame = asset.kind !== 'sticker' ? document.value.elements.find(item => item.type === 'image' && !item.assetId) : undefined;
+    const frame = asset.kind !== 'sticker' ? document.value.elements.find(item => item.type === 'image' && !item.assetId && !item.locked) : undefined;
     if (frame?.type === 'image') { frame.assetId = assetId; return { kind: 'element', id: frame.id }; }
     const maxWidth = document.value.width * (asset.kind === 'sticker' ? 0.25 : 0.65);
     const maxHeight = document.value.height * (asset.kind === 'sticker' ? 0.25 : 0.65);
     const ratio = Math.min(maxWidth / Math.max(1, asset.width), maxHeight / Math.max(1, asset.height));
     const width = Math.max(1, asset.width * ratio), height = Math.max(1, asset.height * ratio);
     const item = imageElement(assetId, { x: (document.value.width - width) / 2, y: (document.value.height - height) / 2, width, height });
-    document.value.elements.push(item);
+    if (isPoster() && asset.kind !== 'sticker') {
+      let position = document.value.elements.length;
+      while (position > 0) {
+        const previous = document.value.elements[position - 1]!;
+        const previousAsset = previous.type === 'image' ? assets.value[previous.assetId] ?? incoming?.find(asset => asset.id === previous.assetId) : undefined;
+        if (previousAsset?.kind === 'image' || previousAsset?.kind === 'video') break;
+        position--;
+      }
+      document.value.elements.splice(position, 0, item);
+    } else document.value.elements.push(item);
     return { kind: 'element', id: item.id };
   }
   function addAssets(items: MediaAsset[], target?: Selection) {
     if (!items.length) return;
+    let addedCount = 0;
     if (document.value.mode === 'free') {
-      let addedCount = items.filter(asset => asset.kind === 'image' || asset.kind === 'video').length;
-      const destination = target === undefined ? selection.value : target;
-      const replacement = destination?.kind === 'element' ? document.value.elements.find(item => item.id === destination.id) : undefined;
-      if (items[0]!.kind !== 'audio' && replacement?.type === 'image' && replacement.assetId && (assets.value[replacement.assetId]?.kind === 'image' || assets.value[replacement.assetId]?.kind === 'video')) addedCount--;
-      if (addedCount > 0 && photoSources().length + addedCount > MAX_COLLAGE_PHOTOS) throw new Error(`最多支持 ${MAX_COLLAGE_PHOTOS} 张照片，请先整理照片。`);
+      for (let index = 0; index < items.length; index++) {
+        const asset = items[index]!;
+        if (index === 0) addedCount += placementPhotoDelta(asset, target);
+        else if (asset.kind === 'image' || asset.kind === 'video') addedCount++;
+      }
+      if (addedCount > 0 && photoCount() + addedCount > MAX_COLLAGE_PHOTOS) throw new Error(`最多支持 ${MAX_COLLAGE_PHOTOS} 张照片，请先整理照片。`);
+      if (addedCount) guardPosterChange();
     }
     let last: Selection = null;
     for (const [index, asset] of items.entries()) last = place(asset.id, index === 0 ? target : null, asset, items) ?? last;
     register(items);
+    if (addedCount) reflowPoster();
     selection.value = last;
     changed();
   }
-  function placeAsset(assetId: string, target?: Selection) { selection.value = place(assetId, target); changed(); }
+  function placeAsset(assetId: string, target?: Selection) {
+    const asset = assets.value[assetId];
+    const delta = document.value.mode === 'free' && asset ? placementPhotoDelta(asset, target) : 0;
+    if (delta) guardPosterChange();
+    selection.value = place(assetId, target);
+    if (delta) reflowPoster();
+    changed();
+  }
   function reflowFreeSpacing(padding: number, gap: number, width: number, height: number) {
     const doc = document.value;
     const sx = (width - padding * 2) / (width - doc.padding * 2);
@@ -416,13 +543,13 @@ export const useEditorStore = defineStore('editor', () => {
     changed(commit);
   }
   function updateSlot(patch: Partial<CollageSlot>, commit = true) {
-    if (!selectedSlot.value) return;
+    if (!selectedSlot.value || (selectedSlot.value.locked && patch.locked !== false)) return;
     const { id: _id, ...editable } = clone(patch);
     Object.assign(selectedSlot.value, editable);
     changed(commit);
   }
   function cropTarget(target: Exclude<Selection, null>, page = document.value) {
-    if (target.kind === 'slot') return page.mode === 'grid' ? page.slots.find(slot => slot.id === target.id) ?? null : null;
+    if (target.kind === 'slot') return page.mode === 'grid' ? page.slots.find(slot => slot.id === target.id && !slot.locked) ?? null : null;
     const element = page.elements.find(item => item.id === target.id);
     return element?.type === 'image' && !element.locked ? element : null;
   }
@@ -463,7 +590,7 @@ export const useEditorStore = defineStore('editor', () => {
     if (cropSession.value && (change.kind !== cropSession.value.target.kind || change.id !== cropSession.value.target.id)) return;
     if (change.kind === 'slot') {
       const slot = document.value.slots.find(item => item.id === change.id);
-      if (!slot) return;
+      if (!slot || slot.locked) return;
       slot.crop = clone(change.crop);
     } else {
       const element = document.value.elements.find(item => item.id === change.id);
@@ -482,6 +609,7 @@ export const useEditorStore = defineStore('editor', () => {
   }
   function addDrawing(change: DrawingChange) {
     const item = createDrawing(change);
+    if (change.tool === 'eraser') item.eraseTargets = document.value.elements.filter(element => element.type === 'drawing' && element.tool !== 'eraser' && element.visible && !element.locked).map(element => element.id);
     document.value.elements.push(item); selection.value = { kind: 'element', id: item.id }; changed();
   }
   function applyLayout(layout: LayoutPreset) {
@@ -517,7 +645,7 @@ export const useEditorStore = defineStore('editor', () => {
       if (doc.layoutId.startsWith('long-')) doc.layoutId = 'custom';
       doc.elements = [...pictures, ...doc.elements]; doc.slots = []; doc.mode = 'free';
     } else {
-      const photos = photoSources();
+      const photos = doc.elements.filter((element): element is ImageElement => element.type === 'image' && (!element.assetId || assets.value[element.assetId]?.kind !== 'sticker'));
       if (photos.length > MAX_COLLAGE_PHOTOS) throw new Error(`最多支持 ${MAX_COLLAGE_PHOTOS} 张照片，请先整理照片。`);
       const layout = layouts.find(item => item.id === doc.layoutId && item.count >= photos.length) ?? layouts.find(item => item.id === `grid-${Math.max(1, photos.length)}`)!;
       assignLayout(layout, photos);
@@ -593,7 +721,10 @@ export const useEditorStore = defineStore('editor', () => {
     guardTextEdit();
     checkpoint();
     const item = makePhotoText(text ?? style.sample, style, undefined, measure);
-    document.value.elements.push(item); selection.value = { kind: 'element', id: item.id }; changed();
+    const doc = document.value;
+    doc.elements.push(item);
+    if (text !== undefined && doc.textDraft === text) doc.textDraft = '';
+    selection.value = { kind: 'element', id: item.id }; changed();
   }
   function applyTextStyle(style: PhotoTextStyle, measure?: TextHeightMeasurer) {
     guardTextEdit();
@@ -637,8 +768,26 @@ export const useEditorStore = defineStore('editor', () => {
     selection.value = { kind: 'element', id: title.id }; changed();
   }
   function addShape(shape: ImageShape) {
+    const decorations = document.value.elements.filter(element => element.visible && element.opacity > 0 && (element.type === 'shape' || element.type === 'text' || element.type === 'drawing'));
+    const colors = decorations.map(element => {
+      const color = (element.type === 'shape' ? element.fill : element.type === 'text' || element.type === 'drawing' ? element.color : '').trim();
+      let alpha = 1;
+      if (!color || color.toLowerCase() === 'transparent' || color.toLowerCase() === 'none') alpha = 0;
+      else if (/^#[\da-f]{8}$/i.test(color)) alpha = parseInt(color.slice(-2), 16) / 255;
+      else if (/^#[\da-f]{4}$/i.test(color)) alpha = parseInt(color.slice(-1), 16) / 15;
+      else {
+        const opacity = color.match(/^(?:rgba|hsla)\([^,]+,[^,]+,[^,]+,\s*([\d.]+)(%)?\s*\)$/i) ?? color.match(/^(?:rgba?|hsla?)\([^/]+\/\s*([\d.]+)(%)?\s*\)$/i);
+        if (opacity) alpha = Number(opacity[1]) / (opacity[2] ? 100 : 1);
+      }
+      return { element, color, alpha: alpha * element.opacity };
+    }).filter(candidate => candidate.alpha > 0);
+    const fill = colors.find(candidate => candidate.element.type === 'shape' && candidate.element.id === selected.value?.id)?.color
+      ?? colors.find(candidate => candidate.element.type === 'shape' && candidate.alpha >= .99)?.color
+      ?? colors.find(candidate => candidate.element.type === 'shape')?.color
+      ?? colors[0]?.color
+      ?? '#c65843';
     const width = document.value.width * 0.25;
-    const item: SceneElement = { ...createElementBase('shape'), type: 'shape', shape, x: (document.value.width - width) / 2, y: (document.value.height - width) / 2, width, height: width, fill: '#f4a7a0', stroke: '', strokeWidth: 0 };
+    const item: SceneElement = { ...createElementBase('shape'), type: 'shape', shape, x: (document.value.width - width) / 2, y: (document.value.height - width) / 2, width, height: width, fill, stroke: '', strokeWidth: 0 };
     document.value.elements.push(item); selection.value = { kind: 'element', id: item.id }; changed();
   }
   async function addSticker(sticker: StickerPreset): Promise<void> {
@@ -651,10 +800,16 @@ export const useEditorStore = defineStore('editor', () => {
   function deleteSelected() {
     if (selected.value?.type === 'text') guardTextEdit();
     if (selectedSlot.value) {
+      if (selectedSlot.value.locked) return;
       if (document.value.layoutId.startsWith('long-')) Object.assign(document.value, longGeometry(document.value.slots.filter(slot => slot.id !== selectedSlot.value!.id)));
       else { selectedSlot.value.assetId = null; selectedSlot.value.crop = createCrop(); selectedSlot.value.filter = createFilter(); selectedSlot.value.trimStart = 0; selectedSlot.value.trimEnd = null; selectedSlot.value.muted = false; }
     }
-    else if (selected.value && !selected.value.locked) document.value.elements = document.value.elements.filter(item => item.id !== selected.value!.id);
+    else if (selected.value && !selected.value.locked) {
+      const reflow = isOrdinaryPhoto(selected.value) && isPoster();
+      if (reflow) guardPosterChange();
+      document.value.elements = document.value.elements.filter(item => item.id !== selected.value!.id);
+      if (reflow) reflowPoster();
+    }
     else return;
     selection.value = null; changed();
   }
@@ -662,20 +817,22 @@ export const useEditorStore = defineStore('editor', () => {
     const item = selected.value;
     if (item?.type === 'text') guardTextEdit();
     const duplicatesPhoto = (item?.type === 'image' && (assets.value[item.assetId]?.kind === 'image' || assets.value[item.assetId]?.kind === 'video')) || !!selectedSlot.value?.assetId;
-    if (duplicatesPhoto && photoSources().length >= MAX_COLLAGE_PHOTOS) throw new Error(`最多支持 ${MAX_COLLAGE_PHOTOS} 张照片，请先整理照片。`);
+    if (duplicatesPhoto && photoCount() >= MAX_COLLAGE_PHOTOS) throw new Error(`最多支持 ${MAX_COLLAGE_PHOTOS} 张照片，请先整理照片。`);
+    if (duplicatesPhoto) guardPosterChange();
     if (item) {
       const copy = { ...clone(item), id: crypto.randomUUID(), x: item.x + 24, y: item.y + 24, locked: false };
       document.value.elements.splice(document.value.elements.indexOf(item) + 1, 0, copy);
+      if (duplicatesPhoto) reflowPoster();
       selection.value = { kind: 'element', id: copy.id }; changed();
     } else if (selectedSlot.value?.assetId) {
       const slot = selectedSlot.value;
-      const empty = document.value.slots.find(candidate => !candidate.assetId);
+      const empty = document.value.slots.find(candidate => !candidate.assetId && !candidate.locked);
       if (empty) {
-        Object.assign(empty, { assetId: slot.assetId, crop: clone(slot.crop), filter: clone(slot.filter), shape: slot.shape, trimStart: slot.trimStart ?? 0, trimEnd: slot.trimEnd ?? null, muted: slot.muted ?? false });
+        Object.assign(empty, { assetId: slot.assetId, crop: clone(slot.crop), filter: clone(slot.filter), shape: slot.shape, visible: slot.visible, trimStart: slot.trimStart ?? 0, trimEnd: slot.trimEnd ?? null, muted: slot.muted ?? false });
         selection.value = { kind: 'slot', id: empty.id };
       } else {
         const rect = slotRect(document.value, slot);
-        const copy = imageElement(slot.assetId!, { ...rect, x: rect.x + 24, y: rect.y + 24, crop: clone(slot.crop), filter: clone(slot.filter), shape: slot.shape, cornerRadius: document.value.cornerRadius, trimStart: slot.trimStart ?? 0, trimEnd: slot.trimEnd ?? null, muted: slot.muted ?? false });
+        const copy = imageElement(slot.assetId!, { ...rect, x: rect.x + 24, y: rect.y + 24, crop: clone(slot.crop), filter: clone(slot.filter), shape: slot.shape, visible: slot.visible, cornerRadius: document.value.cornerRadius, trimStart: slot.trimStart ?? 0, trimEnd: slot.trimEnd ?? null, muted: slot.muted ?? false });
         document.value.elements.push(copy); selection.value = { kind: 'element', id: copy.id };
       }
       changed();
@@ -691,7 +848,7 @@ export const useEditorStore = defineStore('editor', () => {
   }
   function swapSlots(first: string, second: string) {
     const a = document.value.slots.find(slot => slot.id === first), b = document.value.slots.find(slot => slot.id === second);
-    if (!a || !b || a === b) return;
+    if (!a || !b || a === b || a.locked || b.locked) return;
     const firstContent = { assetId: a.assetId, crop: a.crop, filter: a.filter, shape: a.shape, trimStart: a.trimStart ?? 0, trimEnd: a.trimEnd ?? null, muted: a.muted ?? false };
     const secondContent = { assetId: b.assetId, crop: b.crop, filter: b.filter, shape: b.shape, trimStart: b.trimStart ?? 0, trimEnd: b.trimEnd ?? null, muted: b.muted ?? false };
     if (document.value.layoutId.startsWith('long-')) Object.assign(document.value, longGeometry(document.value.slots.map(slot => slot.id === first ? { ...slot, ...secondContent } : slot.id === second ? { ...slot, ...firstContent } : slot)));
@@ -717,7 +874,14 @@ export const useEditorStore = defineStore('editor', () => {
     if (cropEditing.value) cancelCropSession();
     const doc = duplicate ? clone(document.value) : createDocument();
     doc.id = crypto.randomUUID(); doc.title = `第 ${project.value.pages.length + 1} 页`; doc.createdAt = Date.now(); doc.updatedAt = doc.createdAt;
-    if (duplicate) { doc.slots.forEach(slot => { slot.id = crypto.randomUUID(); }); doc.elements.forEach(item => { item.id = crypto.randomUUID(); }); }
+    if (duplicate) {
+      doc.slots.forEach(slot => { slot.id = crypto.randomUUID(); });
+      const elementIds = new Map(doc.elements.map(item => [item.id, crypto.randomUUID()]));
+      doc.elements.forEach(item => {
+        item.id = elementIds.get(item.id)!;
+        if (item.type === 'drawing' && item.eraseTargets) item.eraseTargets = item.eraseTargets.map(id => elementIds.get(id) ?? id);
+      });
+    }
     else { doc.width = document.value.width; doc.height = document.value.height; doc.mode = document.value.mode; if (doc.mode === 'free') doc.slots = []; doc.padding = Math.min(doc.padding, Math.min(doc.width, doc.height) / 2 - 1); }
     project.value.pages.push(doc); project.value.activePageId = doc.id; selection.value = null; changed();
   }
@@ -749,12 +913,6 @@ export const useEditorStore = defineStore('editor', () => {
     }
     changed();
   }
-  function replaceSelectedAsset(asset: MediaAsset) {
-    if (!selectedSlot.value && selected.value?.type !== 'image') { disposeAsset(asset); throw new Error('请先选择要替换的照片或相框。'); }
-    if (asset.kind === 'audio') { disposeAsset(asset); throw new Error('照片位置不能替换为音频，请选择图片或视频。'); }
-    const items = [asset];
-    selection.value = place(asset.id, selection.value, asset, items); register(items); changed();
-  }
   function renameProject(title: string) {
     const value = title.trim().slice(0, 256) || '我的拼贴';
     if (project.value.title === value && document.value.title === value) return;
@@ -779,8 +937,8 @@ export const useEditorStore = defineStore('editor', () => {
   return {
     project, document, assets, selection, selected, selectedSlot, selectedAsset, dirty, revision, canUndo, canRedo, cropEditing,
     newProject, initializeCollage, setCollagePhotos, beginCropSession, commitCropSession, cancelCropSession, select, addAssets, placeAsset, updateDocument, updateSelected, updateSlot, changeCrop, transform, addDrawing,
-    applyLayout, setMainPhoto, applyLook, applyTemplate, setMode, addText, applyTextStyle, positionText, addTextPair, addShape, addSticker, deleteSelected, duplicateSelected, moveLayer,
-    swapSlots, resetCrop, checkpoint, undo, redo, addPage, selectPage, deletePage, reorderPage, setAudio, replaceSelectedAsset,
+    applyLayout, setMainPhoto, applyLook, applyTemplate, setMode, setTextDraft, addText, applyTextStyle, positionText, addTextPair, addShape, addSticker, deleteSelected, duplicateSelected, moveLayer,
+    swapSlots, resetCrop, checkpoint, undo, redo, addPage, selectPage, deletePage, reorderPage, setAudio,
     renameProject, markSaved, snapshot, restore,
   };
 });

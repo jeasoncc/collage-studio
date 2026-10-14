@@ -76,8 +76,9 @@ function patchBackground(patch: Partial<BackgroundSpec>, commit = true) {
   emit('action', { type: 'document', patch: { background: { ...props.document.background, ...patch } }, commit });
 }
 function choosePhoto(frame: typeof frames.value[number]) {
-  if (frame.asset && !frame.locked) emit('action', { type: 'selection', selection: frame.target });
-  else if (!frame.asset) emit('managePhotos');
+  if (frame.locked) return;
+  emit('action', { type: 'selection', selection: frame.target });
+  if (!frame.asset) emit('action', { type: 'replace' });
 }
 </script>
 
@@ -119,14 +120,9 @@ function choosePhoto(frame: typeof frames.value[number]) {
       </div>
       <template v-if="layoutTab === 'composition'">
         <div class="tool-row layout-toolbar">
-          <div class="mode-buttons" aria-label="拼图模式">
-            <button type="button" :aria-pressed="document.mode === 'grid'" @click="emit('action', { type: 'document', patch: { mode: 'grid' } })">网格拼图</button>
-            <button type="button" :aria-pressed="document.mode === 'free'" @click="emit('action', { type: 'document', patch: { mode: 'free' } })">自由拼贴</button>
-          </div>
           <button type="button" class="tool-button recommend-button" :disabled="!recommendation" @click="recommendation && emit('action', { type: 'layout', layout: recommendation })"><Sparkles :size="16" aria-hidden="true" /><span>推荐布局</span></button>
           <button type="button" class="tool-button" aria-haspopup="dialog" @click="emit('browse', 'layouts')">全部版式</button>
         </div>
-        <p v-if="longImage" class="inline-note">当前为长图拼接；选布局将切换为网格。</p>
         <LayoutGallery compact :document="document" :assets="assets" :count="placedPhotos.length" :selected-id="document.mode === 'grid' ? document.layoutId : undefined" :preview-images="previewImages" :preview-photos="previewPhotos" :aspect-ratio="document.width / document.height" @select="layout => emit('action', { type: 'layout', layout })" />
       </template>
       <PosterGallery v-else :document="document" :assets="assets" @select="template => emit('action', { type: 'poster', template })" />
@@ -162,8 +158,8 @@ function choosePhoto(frame: typeof frames.value[number]) {
       <div class="ratio-strip horizontal-strip" aria-label="画布比例">
         <button v-for="ratio in ratios" :key="ratio.label" type="button" class="ratio-button" :aria-label="`${ratio.name}画布 ${ratio.label}`" :aria-pressed="!longImage && Math.abs(document.width / document.height - ratio.width / ratio.height) < .001" :disabled="longImage" @click="emit('action', { type: 'document', patch: { width: ratio.width, height: ratio.height } })"><strong>{{ ratio.label }}</strong><span>{{ ratio.name }}</span></button>
       </div>
-      <ColorPicker label="画布底色" :value="document.background.color" allow-transparent @input="value => patchBackground({ color: value, pattern: 'none', assetId: null }, false)" @commit="emit('action', { type: 'checkpoint' })" />
-      <p v-if="longImage" class="inline-note">长图按照片原比例拼接，不改变画布比例。</p>
+      <ColorPicker label="画布底色" :value="document.background.color" allow-transparent @input="value => patchBackground({ color: value }, false)" @commit="emit('action', { type: 'checkpoint' })" />
+      <p v-if="longImage" class="inline-note">高度按照片比例自动计算，修改宽度时会一起调整。</p>
     </template>
   </section>
 </template>
@@ -176,8 +172,6 @@ function choosePhoto(frame: typeof frames.value[number]) {
 .collage-tools button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .tool-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; flex-shrink: 0; }
 .layout-toolbar { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); }
-.layout-toolbar .mode-buttons { grid-column: 1 / -1; }
-.layout-toolbar .mode-buttons button { flex: 1; }
 .tool-note, .inline-note { color: var(--muted); font-size: 12px; line-height: 18px; }
 .inline-note { margin: 0; flex-shrink: 0; }
 .tool-button { min-width: 0; min-height: 44px; display: inline-flex; flex-direction: row; align-items: center; justify-content: center; gap: 7px; line-height: 1.5; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--control); color: var(--ink); white-space: normal; }
@@ -198,9 +192,8 @@ function choosePhoto(frame: typeof frames.value[number]) {
 .photo-caption { display: flex; align-items: center; justify-content: center; gap: 5px; min-height: 24px; line-height: 24px; font-size: 12px; }
 .photo-card.selected, .tone-card.selected { box-shadow: inset 0 0 0 2px var(--accent); background: var(--accent-soft); color: var(--accent); }
 .photo-card.empty, .add-card { background: var(--control); color: var(--muted); box-shadow: none; }
-.mode-buttons { display: flex; flex-shrink: 0; gap: 3px; padding: 3px; border-radius: 16px; background: var(--control); }
-.mode-buttons button, .look-tabs button { min-height: 44px; padding: 0 11px; border: 0; border-radius: 12px; background: transparent; color: inherit; }
-.mode-buttons button[aria-pressed="true"], .look-tabs button[aria-pressed="true"] { background: var(--surface-raised); color: var(--accent); box-shadow: var(--shadow-card); font-weight: 600; }
+.look-tabs button { min-height: 44px; padding: 0 11px; border: 0; border-radius: 12px; background: transparent; color: inherit; }
+.look-tabs button[aria-pressed="true"] { background: var(--surface-raised); color: var(--accent); box-shadow: var(--shadow-card); font-weight: 600; }
 .look-tabs { display: flex; gap: 4px; min-height: 44px; padding: 3px; border-radius: 16px; background: var(--control); flex-shrink: 0; }
 .look-tabs button { flex: 1; }
 .look-tabs .browse-looks { background: var(--accent-soft); color: var(--accent); white-space: nowrap; }

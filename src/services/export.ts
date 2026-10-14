@@ -32,7 +32,7 @@ function collectAudio(segments: ExportAudioSegment[], assets: Record<string, Med
     }
     const clips: Array<{ assetId: string; trimStart: number; trimEnd: number | null; muted: boolean }> = [];
     if (document.background.assetId) clips.push({ assetId: document.background.assetId, trimStart: 0, trimEnd: null, muted: false });
-    if (document.mode === 'grid') for (const slot of document.slots) if (slot.assetId) clips.push({ assetId: slot.assetId, trimStart: slot.trimStart ?? 0, trimEnd: slot.trimEnd ?? null, muted: slot.muted ?? false });
+    if (document.mode === 'grid') for (const slot of document.slots) if (slot.assetId && slot.visible) clips.push({ assetId: slot.assetId, trimStart: slot.trimStart ?? 0, trimEnd: slot.trimEnd ?? null, muted: slot.muted ?? false });
     for (const element of document.elements) if (element.type === 'image' && element.visible) clips.push({ assetId: element.assetId, trimStart: element.trimStart, trimEnd: element.trimEnd, muted: element.muted });
     const seen = new Set<string>();
     for (const clip of clips) {

@@ -24,14 +24,15 @@ const base = {
 const element = z.discriminatedUnion('type', [
   z.strictObject({ ...base, type: z.literal('image'), assetId: z.union([id, z.literal('')]), crop, filter, shape, borderWidth: number.min(0).max(1000), borderColor: color, cornerRadius: number.min(0).max(32768), trimStart: number.min(0).max(86400), trimEnd: number.min(0).max(86400).nullable(), muted: z.boolean() }),
   z.strictObject({ ...base, type: z.literal('text'), text: z.string().max(100000), fontFamily: z.string().min(1).max(256), fontSize: number.min(1).max(10000), fontStyle: z.enum(['normal', 'bold', 'italic', 'bold italic']), color, align: z.enum(['left', 'center', 'right']), lineHeight: number.min(0.1).max(20), stroke: color, strokeWidth: number.min(0).max(1000), backgroundColor: color, curve: number.min(-10000).max(10000) }),
-  z.strictObject({ ...base, type: z.literal('drawing'), points: z.array(position).min(2).max(200000).refine(points => points.length % 2 === 0), color, strokeWidth: number.min(0).max(1000), tool: z.enum(['pen', 'highlighter', 'eraser']) }),
+  z.strictObject({ ...base, type: z.literal('drawing'), points: z.array(position).min(2).max(200000).refine(points => points.length % 2 === 0), color, strokeWidth: number.min(0).max(1000), tool: z.enum(['pen', 'highlighter', 'eraser']), eraseTargets: z.array(id).max(2000).optional() }),
   z.strictObject({ ...base, type: z.literal('shape'), shape, fill: color, stroke: color, strokeWidth: number.min(0).max(1000) }),
 ]);
-const slot = z.strictObject({ id, x: number.min(0).max(1), y: number.min(0).max(1), width: number.positive().max(1), height: number.positive().max(1), assetId: assetReference, crop, filter, shape, trimStart: number.min(0).max(86400).optional(), trimEnd: number.min(0).max(86400).nullable().optional(), muted: z.boolean().optional() }).refine(rect => rect.x + rect.width <= 1.00001 && rect.y + rect.height <= 1.00001, '网格超出画布。');
+const slot = z.strictObject({ id, x: number.min(0).max(1), y: number.min(0).max(1), width: number.positive().max(1), height: number.positive().max(1), assetId: assetReference, crop, filter, shape, visible: z.boolean().default(true), locked: z.boolean().default(false), trimStart: number.min(0).max(86400).optional(), trimEnd: number.min(0).max(86400).nullable().optional(), muted: z.boolean().optional() }).refine(rect => rect.x + rect.width <= 1.00001 && rect.y + rect.height <= 1.00001, '照片位置超出画布。');
 const audio = z.strictObject({ assetId: id, start: number.min(0).max(86400), end: number.min(0).max(86400).nullable(), volume: number.min(0).max(1) });
 const documentSchema = z.strictObject({
   version: z.literal(1), id, title: z.string().max(256), mode: z.enum(['grid', 'free']), width: number.min(16).max(8192), height: number.min(16).max(8192),
   background, layoutId: id, slots: z.array(slot).max(100), elements: z.array(element).max(2000),
+  textDraft: z.string().max(2000).default(''),
   photoFrame: photoFrame.default(createPhotoFrame),
   padding: number.min(0).max(4096), gap: number.min(0).max(4096), cornerRadius: number.min(0).max(4096), duration: number.min(0.1).max(3600), fps: number.min(1).max(120), animation, audio: audio.nullable(), createdAt: number.min(0), updatedAt: number.min(0),
 }).superRefine((document, context) => {
@@ -39,7 +40,7 @@ const documentSchema = z.strictObject({
   if (new Set(ids).size !== ids.length) context.addIssue({ code: 'custom', message: '页面图层标识重复。' });
   if (document.padding * 2 >= Math.min(document.width, document.height)) context.addIssue({ code: 'custom', message: '画布边距过大。' });
   for (const item of document.elements) if (item.type === 'image' && item.trimEnd !== null && item.trimEnd <= item.trimStart) context.addIssue({ code: 'custom', message: '视频裁剪终点必须晚于起点。' });
-  for (const item of document.slots) if (item.trimEnd !== null && item.trimEnd !== undefined && item.trimEnd <= (item.trimStart ?? 0)) context.addIssue({ code: 'custom', message: '网格视频裁剪终点必须晚于起点。' });
+  for (const item of document.slots) if (item.trimEnd !== null && item.trimEnd !== undefined && item.trimEnd <= (item.trimStart ?? 0)) context.addIssue({ code: 'custom', message: '照片中视频裁剪终点必须晚于起点。' });
   if (document.audio?.end !== null && document.audio?.end !== undefined && document.audio.end <= document.audio.start) context.addIssue({ code: 'custom', message: '音乐裁剪终点必须晚于起点。' });
 });
 export const projectSchema = z.strictObject({ version: z.literal(1), id, title: z.string().max(256), pages: z.array(documentSchema).min(1).max(100), activePageId: id }).superRefine((project, context) => {
@@ -86,7 +87,7 @@ export function validateReferences(project: EditorProject, assets: AssetMetadata
     for (const slot of page.slots) {
       requireAsset(slot.assetId);
       const asset = slot.assetId ? records.get(slot.assetId) : null;
-      if (asset?.duration && ((slot.trimStart ?? 0) >= asset.duration || (slot.trimEnd !== null && slot.trimEnd !== undefined && slot.trimEnd > asset.duration + 0.1))) throw new Error('网格视频或动图裁剪超出素材时长，请调整后重试。');
+      if (asset?.duration && ((slot.trimStart ?? 0) >= asset.duration || (slot.trimEnd !== null && slot.trimEnd !== undefined && slot.trimEnd > asset.duration + 0.1))) throw new Error('照片中视频或动图裁剪超出素材时长，请调整后重试。');
     }
     for (const item of page.elements) if (item.type === 'image') {
       requireAsset(item.assetId);

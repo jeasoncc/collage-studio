@@ -1,7 +1,5 @@
 export type EditorMode = 'grid' | 'free';
-export type CollageCreationMode = 'grid' | 'long' | 'free';
 export interface CollageSetup {
-  mode: CollageCreationMode;
   width: number;
   height: number;
   template?: TemplatePreset;
@@ -13,7 +11,6 @@ export interface PhotoSelectionEntry {
 export type AnimationKind = 'none' | 'float' | 'pulse' | 'wiggle' | 'pop' | 'fade';
 export type ImageShape = 'rect' | 'circle' | 'heart' | 'star';
 export type PatternKind = 'none' | 'dots' | 'grid' | 'stripes' | 'paper' | 'checker';
-export type CutoutModelKind = 'portrait' | 'subject';
 
 export interface CropState {
   x: number;
@@ -43,6 +40,8 @@ export interface CollageSlot extends NormalizedRect {
   crop: CropState;
   filter: FilterState;
   shape: ImageShape;
+  visible: boolean;
+  locked: boolean;
   trimStart?: number;
   trimEnd?: number | null;
   muted?: boolean;
@@ -100,6 +99,7 @@ export interface DrawingElement extends ElementBase {
   color: string;
   strokeWidth: number;
   tool: 'pen' | 'highlighter' | 'eraser';
+  eraseTargets?: string[];
 }
 export interface ShapeElement extends ElementBase {
   type: 'shape';
@@ -126,6 +126,7 @@ export interface EditorDocument {
   version: 1;
   id: string;
   title: string;
+  textDraft: string;
   mode: EditorMode;
   width: number;
   height: number;
@@ -206,7 +207,7 @@ export interface DrawingChange {
 }
 export type TextHeightMeasurer = (element: TextElement) => number;
 export interface EditorCanvasHandle {
-  renderFrame: (time: number, pixelRatio?: number) => Promise<HTMLCanvasElement>;
+  renderFrame: (time: number, pixelRatio?: number, document?: EditorDocument) => Promise<HTMLCanvasElement>;
   resetPreview: () => void;
   elementBounds: (id: string) => Promise<{ width: number; height: number } | null>;
   measureTextHeight: TextHeightMeasurer;

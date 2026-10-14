@@ -84,9 +84,12 @@ export async function loadDraft(id: string): Promise<{ project: EditorProject; a
     return await hydrate(copyProject(draft.project), draft.assets);
   } catch (error) { throw actionable('草稿打开失败', error); }
 }
-export async function deleteDraft(id: string): Promise<void> {
-  try { await database.drafts.delete(id); }
-  catch (error) { throw actionable('草稿删除失败', error); }
+export async function deleteDrafts(ids: readonly string[]): Promise<void> {
+  try {
+    const uniqueIds = [...new Set(ids)];
+    if (!uniqueIds.length) return;
+    await database.transaction('rw', database.drafts, () => database.drafts.bulkDelete(uniqueIds));
+  } catch (error) { throw actionable('草稿删除失败，请检查浏览器存储权限后重试', error); }
 }
 async function digest(bytes: Uint8Array): Promise<string> {
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;

@@ -18,10 +18,8 @@ const emit = defineEmits<{ action: [action: PanelAction] }>();
 const act = (action: PanelAction) => emit('action', action);
 const draft = defineModel<string>('draft', { required: true });
 const draftInput = ref<HTMLTextAreaElement>();
-const submittedDraft = ref<{ text: string; revision: number; existingIds: Set<string> }>();
+const submittedDraft = ref<{ text: string; existingIds: Set<string> }>();
 const adding = computed(() => props.pending || !!submittedDraft.value);
-let draftRevision = 0;
-watch(draft, () => { draftRevision++; }, { flush: 'sync' });
 const scroller = ref<HTMLElement>();
 const chosenStyle = ref({ ...photoTextStyles[0]! });
 const tabId = useId();
@@ -63,7 +61,6 @@ watch(() => [selectedText.value?.id, selectedText.value?.text] as const, ([id, t
 watch(() => [selectedText.value?.id, props.pending] as const, ([id, pending], previous) => {
   const submitted = submittedDraft.value;
   if (submitted && id && !submitted.existingIds.has(id) && selectedText.value?.text === submitted.text) {
-    if (draftRevision === submitted.revision && draft.value === submitted.text) draft.value = '';
     submittedDraft.value = undefined;
   } else if (!pending && previous?.[1]) submittedDraft.value = undefined;
 });
@@ -132,7 +129,7 @@ function previewTextStyle(style: PhotoTextStyle): CSSProperties {
 }
 function addText() {
   if (adding.value || !draft.value.trim()) return;
-  submittedDraft.value = { text: draft.value, revision: draftRevision, existingIds: new Set(textLayers.value.map(text => text.id)) };
+  submittedDraft.value = { text: draft.value, existingIds: new Set(textLayers.value.map(text => text.id)) };
   act({ type: 'addText', text: draft.value, style: { ...chosenStyle.value } });
 }
 async function newText() { act({ type: 'selection', selection: null }); activeTab.value = 'content'; await nextTick(); draftInput.value?.focus(); }
@@ -150,12 +147,16 @@ function moveTab(event: KeyboardEvent, index: number) {
   activeTab.value = tabs[next]!.value;
   (event.currentTarget as HTMLElement).parentElement?.querySelectorAll<HTMLButtonElement>('button')[next]?.focus();
 }
+defineExpose({ addText });
 </script>
 
 <template>
   <section class="photo-text-tools" aria-label="照片上的文字工具">
-    <div class="text-tabs" role="tablist" aria-label="文字编辑选项">
-      <button v-for="(tab, index) in tabs" :id="`${tabId}-${tab.value}`" :key="tab.value" type="button" role="tab" :data-text-tab="tab.value" :aria-selected="activeTab === tab.value" :aria-controls="`${tabId}-panel`" :tabindex="activeTab === tab.value ? 0 : -1" @click="activeTab = tab.value" @keydown="event => moveTab(event, index)">{{ tab.label }}</button>
+    <div class="text-navigation">
+      <div class="text-tabs" role="tablist" aria-label="文字编辑选项">
+        <button v-for="(tab, index) in tabs" :id="`${tabId}-${tab.value}`" :key="tab.value" type="button" role="tab" :data-text-tab="tab.value" :aria-selected="activeTab === tab.value" :aria-controls="`${tabId}-panel`" :tabindex="activeTab === tab.value ? 0 : -1" @click="activeTab = tab.value" @keydown="event => moveTab(event, index)">{{ tab.label }}</button>
+      </div>
+      <button v-if="!selectedText" type="button" class="text-add-button" :disabled="adding || !draft.trim()" :aria-busy="adding" aria-label="添加文字到照片" @click="addText"><Plus :size="17" aria-hidden="true" /><span>{{ adding ? '准备中' : '添加' }}</span></button>
     </div>
     <div :id="`${tabId}-panel`" ref="scroller" class="text-tab-content" role="tabpanel" :aria-labelledby="`${tabId}-${activeTab}`" tabindex="0">
       <div v-if="textLayers.length" class="text-toolbar">
@@ -166,7 +167,7 @@ function moveTab(event: KeyboardEvent, index: number) {
       <p v-if="locked" class="text-notice"><Lock :size="15" aria-hidden="true" />已锁定，请在图层管理中解锁。</p>
       <p v-else-if="selectedText && !selectedText.visible" class="text-notice">这段文字已隐藏，可在图层管理中显示。</p>
       <template v-if="activeTab === 'content'">
-        <label class="text-field"><span>{{ selectedText ? '你的文案' : '写在照片上' }}<small>支持多行</small></span>
+        <label class="text-field"><span>{{ selectedText ? '你的文案' : '写在照片上' }}<small>{{ selectedText ? '支持多行' : '文案自动存入草稿' }}</small></span>
           <textarea v-if="selectedText" :key="selectedText.id" v-model="textBuffer" :disabled="locked" rows="2" maxlength="2000" aria-label="所选文字内容" @input="publishText" @compositionstart="startComposition" @compositionend="finishComposition" @change="commitText" />
           <textarea v-else ref="draftInput" v-model="draft" rows="2" maxlength="2000" :placeholder="chosenStyle.sample" aria-label="新文字内容" />
         </label>
@@ -198,7 +199,6 @@ function moveTab(event: KeyboardEvent, index: number) {
         <details class="text-advanced text-pair-details"><summary>标题与正文 · 字体搭配</summary><div class="text-control-stack"><button v-for="pair in photoTextPairs" :key="pair.name" type="button" class="text-font-pair" :disabled="pending" :aria-label="`添加字体搭配：${pair.name}`" @click="!pending && act({ type: 'textPair', pair })"><span :style="{ fontFamily: pair.heading }">{{ pair.title }}</span><small :style="{ fontFamily: pair.body }">{{ pair.name }}</small></button><p class="text-hint">一次添加两层文字，整组一步撤销。</p></div></details>
       </fieldset>
     </div>
-    <div v-if="!selectedText" class="text-add-footer"><button type="button" class="text-add-button" :disabled="adding || !draft.trim()" :aria-busy="adding" aria-label="添加文字到照片" @click="addText"><Plus :size="17" aria-hidden="true" /><span role="status">{{ adding ? '正在准备字体…' : `添加到${targetPhoto ? '照片' : '画布'}上` }}</span></button></div>
   </section>
 </template>
 
@@ -213,6 +213,9 @@ function moveTab(event: KeyboardEvent, index: number) {
 .text-toolbar{display:flex;align-items:center;gap:8px;flex-shrink:0;min-height:44px}
 .text-toolbar :deep(.app-select-trigger){flex:1;width:auto;min-width:0}
 .photo-text-tools .text-new{flex-shrink:0;background:var(--accent-soft);color:var(--accent)}
+.text-navigation{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.text-navigation .text-tabs{flex:1;min-width:0}
+.text-navigation .text-add-button{flex:none;padding:10px 9px}
 .text-tabs{flex-shrink:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:3px;padding:4px;background:var(--control);border-radius:16px}
 .text-tabs button{min-width:0;padding:8px 2px;border-radius:12px;color:var(--muted);background:transparent;font-size:13px}
 .text-tabs button[aria-selected='true']{color:var(--accent);background:var(--surface-raised);font-weight:600;box-shadow:0 2px 7px #2033290d}
@@ -270,11 +273,10 @@ function moveTab(event: KeyboardEvent, index: number) {
 .photo-text-tools .text-font-pair{display:grid;justify-content:stretch;gap:6px;text-align:left;padding:14px;width:100%}
 .text-font-pair>span{font-size:22px;line-height:1.4}
 .text-font-pair small{font-size:11px;color:var(--muted)}
-.text-add-footer{flex-shrink:0;padding:8px 0 env(safe-area-inset-bottom);background:var(--surface)}
-.photo-text-tools .text-add-button{width:100%;background:var(--accent);color:white;font-weight:600;box-shadow:0 3px 10px #284b3d18}
+.photo-text-tools .text-add-button{background:var(--accent);color:white;font-weight:600;box-shadow:0 3px 10px #284b3d18}
 .text-sr-only{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
 @media(hover:hover){.photo-text-tools button:hover:not(:disabled){background:var(--control-hover)}.photo-text-tools .text-add-button:hover:not(:disabled){background:#203c31}}
-@media(max-width:700px) and (orientation:portrait){.photo-text-tools{gap:8px}.text-tab-content{gap:14px;padding-bottom:10px}.text-toolbar{min-height:44px}.text-field textarea{min-height:92px}.text-style-grid{gap:8px}.text-font-card>span{font-size:20px}.text-font-card i{font-size:8px}}
+@media(max-width:700px) and (orientation:portrait){.photo-text-tools{gap:8px}.text-tab-content{gap:14px;padding-bottom:10px}.text-toolbar{min-height:44px}.text-field textarea{min-height:64px;padding:10px;resize:none}.text-field{gap:6px}.text-field small{font-size:11px}.text-style-grid{gap:8px}.text-font-card>span{font-size:20px}.text-font-card i{font-size:8px}}
 @media(max-width:900px) and (orientation:landscape) and (max-height:600px){.photo-text-tools{height:var(--text-tools-height,calc(100dvh - 118px))}}
 @media(prefers-reduced-motion:reduce){.photo-text-tools button{transition:none}}
 </style>

@@ -8,7 +8,7 @@ import BackgroundPreview from './BackgroundPreview.vue';
 import PhotoFramePreview from './PhotoFramePreview.vue';
 import { curvedTextPath, shapePath } from './canvasGeometry';
 
-interface PreviewPhoto { url: string; width: number; height: number; crop?: CropState; filter?: FilterState }
+interface PreviewPhoto { url: string; width: number; height: number; crop?: CropState; filter?: FilterState; visible?: boolean; opacity?: number }
 const props = withDefaults(defineProps<{ template: TemplatePreset; eager?: boolean; photos?: readonly PreviewPhoto[]; photoFrame?: PhotoFrameSpec }>(), { eager: false });
 const id = useId();
 const canvas = ref<SVGSVGElement>();
@@ -41,8 +41,8 @@ const scene = computed<SceneItem[]>(() => {
       x: frame.x * template.width, y: frame.y * template.height, width: frame.width * template.width, height: frame.height * template.height,
       rotation: frame.rotation ?? 0, shape: frame.shape ?? 'rect', borderWidth: frame.borderWidth ?? 0, borderColor: frame.borderColor ?? '#ffffff', cornerRadius: template.cornerRadius,
     }));
-  const photos = props.photos ?? photosForTemplate(template, frames.length);
-  const pictures: SceneItem[] = frames.map((frame, index) => ({ kind: 'photo', key: `photo-${index}`, frame, photo: photos[index] }));
+  const photos: readonly PreviewPhoto[] = props.photos ?? photosForTemplate(template, frames.length);
+  const pictures: SceneItem[] = frames.flatMap<SceneItem>((frame, index) => photos[index]?.visible === false ? [] : [{ kind: 'photo', key: `photo-${index}`, frame, photo: photos[index] }]);
   const decorations: SceneItem[] = template.elements.filter(element => element.visible).map(element => ({ kind: 'element', key: element.id, element }));
   if (template.mode === 'grid' || template.photoLayering === 'overlay') return [...pictures, ...decorations];
   const isBacking = (item: SceneItem) => item.kind === 'element' && item.element.type === 'shape' && item.element.animation === 'none';
@@ -76,7 +76,7 @@ function textY(element: TextElement): number {
       </defs>
       <g :class="template.animation !== 'none' ? `motion-${template.animation}` : undefined" class="scene-motion">
         <BackgroundPreview :document="template" />
-        <g v-for="item in scene" :key="item.key" :transform="transform(item)" :opacity="item.kind === 'element' ? item.element.opacity : 1">
+        <g v-for="item in scene" :key="item.key" :transform="transform(item)" :opacity="item.kind === 'element' ? item.element.opacity : item.photo?.opacity ?? 1">
           <PhotoFramePreview v-if="item.kind === 'photo'" :width="item.frame.width" :height="item.frame.height" :source="item.photo?.url" :source-width="item.photo?.width" :source-height="item.photo?.height" :crop="item.photo?.crop" :filter="item.photo?.filter" :shape="item.frame.shape" :corner-radius="item.frame.cornerRadius" :photo-frame="photoFrame" :border-width="item.frame.borderWidth" :border-color="item.frame.borderColor" />
           <g v-else :class="item.element.animation !== 'none' ? `motion-${item.element.animation}` : undefined" class="element-motion" :filter="item.element.shadow ? `url(#${id}-${item.key}-shadow)` : undefined">
             <path v-if="item.element.type === 'shape'" :d="shapePath(item.element.shape, item.element.width, item.element.height)" :fill="item.element.fill" :stroke="item.element.stroke || 'none'" :stroke-width="item.element.strokeWidth" />

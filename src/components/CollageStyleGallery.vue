@@ -22,7 +22,7 @@ const selectedId = computed(() => matchingCollageLook(props.document, props.asse
 const compositionHint = computed(() => props.document.mode === 'free'
   ? '保留照片位置、大小与旋转，只换衬底和相框。'
   : props.document.layoutId.startsWith('long-')
-    ? '按原照片比例重新计算长拼高度，保留照片顺序与裁剪。'
+    ? '按原照片比例重新计算画布高度，保留照片顺序与裁剪。'
     : '保留当前版式与裁剪，用留白和实体相框呈现照片。');
 
 interface PreviewFrame {

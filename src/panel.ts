@@ -1,11 +1,11 @@
-import type { EditorDocument, SceneElement, CollageSlot, LayoutPreset, TemplatePreset, StickerPreset, ImageShape, CutoutModelKind, FilterState, Selection } from './types';
+import type { EditorDocument, SceneElement, CollageSlot, LayoutPreset, TemplatePreset, StickerPreset, ImageShape, FilterState, Selection } from './types';
 import type { CollageLook } from './catalog/looks';
 import type { PhotoTextPair, PhotoTextStyle, TextPlacement } from './catalog/photoText';
 
 export type PanelName = 'photos' | 'layouts' | 'spacing' | 'looks' | 'templates' | 'background' | 'text' | 'stickers' | 'draw' | 'layers' | 'animation' | 'audio';
 export type EditorTool = 'select' | 'draw' | 'erase';
 export type PanelAction =
-  | { type: 'document'; patch: Partial<EditorDocument>; commit?: boolean }
+  | { type: 'document'; patch: Partial<Omit<EditorDocument, 'mode'>>; commit?: boolean }
   | { type: 'element'; patch: Partial<SceneElement>; commit?: boolean }
   | { type: 'slot'; patch: Partial<CollageSlot>; commit?: boolean }
   | { type: 'layout'; layout: LayoutPreset }
@@ -32,7 +32,6 @@ export type PanelAction =
   | { type: 'select'; id: string }
   | { type: 'resetCrop' }
   | { type: 'smartCrop' }
-  | { type: 'cutout'; model: CutoutModelKind }
   | { type: 'swap' }
   | { type: 'checkpoint' }
   | { type: 'tool'; tool: EditorTool }

@@ -6,7 +6,7 @@ import { ChromePicker, tinycolor } from 'vue-color';
 import 'vue-color/style.css';
 import PanelRange from './PanelRange.vue';
 
-const props = withDefaults(defineProps<{ value: string; label: string; alpha?: boolean; allowTransparent?: boolean; disabled?: boolean; inline?: boolean }>(), { alpha: false, allowTransparent: false, disabled: false, inline: false });
+const props = withDefaults(defineProps<{ value: string; label: string; alpha?: boolean; allowTransparent?: boolean; disabled?: boolean; inline?: boolean; palette?: readonly string[] }>(), { alpha: false, allowTransparent: false, disabled: false, inline: false });
 const emit = defineEmits<{ input: [value: string]; commit: [] }>();
 const open = ref(false);
 const hex = ref('');
@@ -31,7 +31,17 @@ const colors = [
   { name: '鼠尾草', value: '#b7c6ad' }, { name: '杏色', value: '#e9c8a8' },
   { name: '陶粉', value: '#cd8b7d' }, { name: '雾蓝', value: '#97b4bd' },
   { name: '淡紫', value: '#c2b2ce' }, { name: '柠黄', value: '#ecd58c' },
+  { name: '朱红', value: '#d94332' }, { name: '暖金', value: '#d8b15c' },
+  { name: '橙金', value: '#ee9b32' }, { name: '珊瑚', value: '#f2796a' },
 ];
+const artworkColors = computed(() => {
+  const unique = new Set<string>();
+  for (const value of props.palette ?? []) {
+    const parsed = tinycolor(value);
+    if (parsed.isValid() && parsed.getAlpha() > 0) unique.add(parsed.toHexString());
+  }
+  return [...unique];
+});
 function parse(value: string) {
   if (!value || value === 'transparent') return { rgb: '#ffffff', alpha: 0 };
   const parsed = tinycolor(value);
@@ -290,6 +300,14 @@ onBeforeUnmount(() => {
             <ChromePicker :model-value="color.rgb" :tiny-color="pickerColor" :disable-fields="true" :disable-alpha="true" @update:tiny-color="updatePicker" />
             <span class="hue-caption" aria-hidden="true">色相</span>
           </div>
+          <div v-if="artworkColors.length" class="artwork-palette">
+            <p class="picker-help">当前作品颜色</p>
+            <div class="color-swatches" role="group" :aria-label="`${label}当前作品颜色`">
+              <button v-for="(value, index) in artworkColors" :key="value" type="button" class="color-swatch" :disabled="disabled" :data-color="value" :aria-label="`${label}作品色 ${index + 1} ${value}`" :aria-pressed="!transparent && color.rgb === value" @click="choose(value)">
+                <i :style="{ background: value }"><Check v-if="!transparent && color.rgb === value" :size="16" aria-hidden="true" /></i><span>作品色 {{ index + 1 }}</span>
+              </button>
+            </div>
+          </div>
           <div class="color-swatches" role="group" :aria-label="`${label}常用颜色`">
             <button v-if="allowTransparent" type="button" class="color-swatch clear-color" :disabled="disabled" :aria-label="`${label}无底色`" :aria-pressed="transparent" @click="clearColor"><Slash :size="18" aria-hidden="true" /><span>无</span></button>
             <button v-for="swatch in colors" :key="swatch.value" type="button" class="color-swatch" :disabled="disabled" :data-color="swatch.value" :aria-label="`${label} ${swatch.name} ${swatch.value}`" :aria-pressed="!transparent && color.rgb === swatch.value" @click="choose(swatch.value)">
@@ -338,6 +356,7 @@ onBeforeUnmount(() => {
 .color-advanced summary::before{content:'›';font-size:20px;transition:transform .15s}
 .color-advanced[open] summary::before{transform:rotate(90deg)}
 .color-advanced summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px;border-radius:8px}
+.artwork-palette{display:grid;gap:6px}
 .color-swatches{display:grid;grid-template-columns:repeat(auto-fit,minmax(44px,1fr));gap:6px}
 .color-swatch{min-width:44px;min-height:60px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;padding:5px 2px;border:0;border-radius:12px;background:transparent;font-size:10px;color:var(--muted)}
 .color-swatch i{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;box-shadow:inset 0 0 0 1px #202c2512}

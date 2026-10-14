@@ -14,7 +14,7 @@ export function longComposition(
   const scale = Math.min(1, 8192 / requestedWidth, 8192 / requestedHeight);
   const width = requestedWidth * scale, height = requestedHeight * scale;
   const padding = presentation.padding * scale, gap = presentation.gap * scale;
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 16 || height < 16 || innerWidth <= 0 || photos.some((photo, index) => innerWidth * (1 - inset * 2) * scale < 16 || (heights[index]! - innerWidth * (inset * 2 + footer)) * scale < 16 || photo.width <= 0 || photo.height <= 0)) throw new Error('照片比例或留白过于极端，无法在 16 至 8192 像素的画布内完整长拼。');
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 16 || height < 16 || innerWidth <= 0 || photos.some((photo, index) => innerWidth * (1 - inset * 2) * scale < 16 || (heights[index]! - innerWidth * (inset * 2 + footer)) * scale < 16 || photo.width <= 0 || photo.height <= 0)) throw new Error('照片比例或留白过于极端，无法在 16 至 8192 像素的画布内完整排列。');
   const innerHeight = height - padding * 2;
   let offset = 0;
   const slots: NormalizedRect[] = heights.map((photoHeight, index) => {

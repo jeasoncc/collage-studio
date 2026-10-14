@@ -14,7 +14,7 @@ let pwaOutputDirectory = resolve('dist');
 
 export default defineConfig({
   // vite-plugin-pwa forwards Vite's define values to its separate worker build.
-  define: { __COLLAGE_NATIVE__: JSON.stringify(nativeBuild), __COLLAGE_PWA_BUILD_ID__: JSON.stringify(pwaBuildId), __COLLAGE_PWA_ENABLED__: JSON.stringify(pwaEnabled) },
+  define: { __COLLAGE_PWA_BUILD_ID__: JSON.stringify(pwaBuildId), __COLLAGE_PWA_ENABLED__: JSON.stringify(pwaEnabled) },
   test: { exclude: [...configDefaults.exclude, 'third_party/codecs/.work/**'] },
   plugins: [
     vue(),
@@ -44,8 +44,8 @@ export default defineConfig({
         start_url: pwaBase,
         scope: pwaBase,
         display: 'standalone',
-        background_color: '#f5f5ef',
-        theme_color: '#284b3d',
+        background_color: '#f7f7fb',
+        theme_color: '#6654f0',
         icons: [
           { src: `${pwaBase}icons/icon-192.png`, sizes: '192x192', type: 'image/png', purpose: 'any' },
           { src: `${pwaBase}icons/icon-512.png`, sizes: '512x512', type: 'image/png', purpose: 'any' },
@@ -55,7 +55,7 @@ export default defineConfig({
       includeAssets: ['icons/*.png', 'third-party-notices.txt'],
       injectManifest: {
         globPatterns: ['**/*.{html,js,css,json,webmanifest,woff,woff2,ttf,otf,eot,png,jpg,jpeg,webp,avif,gif,svg,txt}'],
-        globIgnores: ['**/*.wasm', '**/*.{onnx,safetensors,bin,pt,pth}', '**/*.map'],
+        globIgnores: ['**/*.map'],
         maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
         manifestTransforms: [async entries => ({
           manifest: await Promise.all(entries.map(async entry => {

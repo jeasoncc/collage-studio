@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { Upload, Image as ImageIcon, Type, Shapes, Pencil, Music, Lock, LockOpen, Eye, EyeOff, Copy, Trash2, ArrowUp, ArrowDown, MoveUp, MoveDown, RotateCcw, FlipHorizontal, FlipVertical, Scissors, Check } from 'lucide-vue-next';
-import type { AnimationKind, BackgroundSpec, CollageSlot, CropState, EditorDocument, FilterState, ImageElement, ImageShape, MediaAsset, PatternKind, SceneElement, Selection } from '../types';
+import { computed, nextTick, ref, watch } from 'vue';
+import { Upload, Image as ImageIcon, Type, Shapes, Pencil, Music, Lock, LockOpen, Eye, EyeOff, Copy, Trash2, ArrowUp, ArrowDown, MoveUp, MoveDown, RotateCcw, FlipHorizontal, FlipVertical, Check, LocateFixed } from 'lucide-vue-next';
+import type { AnimationKind, BackgroundSpec, CollageSlot, CropState, EditorDocument, FilterState, ImageElement, ImageShape, MediaAsset, PatternKind, SceneElement, Selection, TemplatePreset } from '../types';
 import type { EditorTool, PanelAction, PanelName } from '../panel';
 import { filterPresets } from '../catalog/photoStyles';
 import { layoutsForCount, MAX_COLLAGE_PHOTOS, recommendLayout } from '../catalog/layouts';
+import { MIN_CROP_ZOOM, MAX_CROP_ZOOM } from '../defaults';
+import { tinycolor } from 'vue-color';
+import { shapePath } from './canvasGeometry';
 import LayoutGallery from './LayoutGallery.vue';
 import CollageStyleGallery from './CollageStyleGallery.vue';
 import TemplateGallery from './TemplateGallery.vue';
@@ -17,11 +20,21 @@ import ColorPicker from './ColorPicker.vue';
 import PhotoSpacingControls from './PhotoSpacingControls.vue';
 import ShapeControls from './ShapeControls.vue';
 
-const props = defineProps<{ panel: PanelName; document: EditorDocument; assets: Record<string, MediaAsset>; selection: Selection; tool: EditorTool; brushColor: string; brushSize: number; highlighter: boolean; cropMode: boolean; textPending: boolean }>();
+const props = defineProps<{ panel: PanelName; document: EditorDocument; assets: Record<string, MediaAsset>; selection: Selection; tool: EditorTool; brushColor: string; brushSize: number; highlighter: boolean; cropMode: boolean; textPending: boolean; previewPhotos?: readonly { url: string; width: number; height: number; crop?: CropState; filter?: FilterState }[] }>();
 const textDraft = defineModel<string>('textDraft', { required: true });
-const emit = defineEmits<{ action: [action: PanelAction] }>();
+const emit = defineEmits<{ action: [action: PanelAction]; templatePreview: [open: boolean] }>();
 const act = (action: PanelAction) => emit('action', action);
 const checkpoint = () => act({ type: 'checkpoint' });
+const templateGallery = ref<{ closePreview: () => void; openPreview: (template: TemplatePreset) => void; getPreview: () => TemplatePreset | null }>();
+function closeTemplatePreview() { templateGallery.value?.closePreview(); }
+function openTemplatePreview(template: TemplatePreset) { templateGallery.value?.openPreview(template); }
+defineExpose({ closeTemplatePreview, openTemplatePreview, getTemplatePreview: () => templateGallery.value?.getPreview() ?? null });
+const panelRoot = ref<HTMLElement>();
+watch(() => [props.panel, props.selection?.kind, props.selection?.id], async () => {
+  if (props.panel !== 'layers') return;
+  await nextTick();
+  panelRoot.value?.closest<HTMLElement>('.dock-body')?.scrollTo({ top: 0 });
+}, { immediate: true });
 const selectedSlot = computed(() => props.selection?.kind === 'slot' ? props.document.slots.find(slot => slot.id === props.selection?.id) : undefined);
 const selectedElement = computed(() => props.selection?.kind === 'element' ? props.document.elements.find(element => element.id === props.selection?.id) : undefined);
 const selectedImage = computed(() => selectedElement.value?.type === 'image' ? selectedElement.value : undefined);
@@ -34,6 +47,12 @@ const backgroundAssets = computed(() => visualAssets.value.filter(asset => asset
 const audioAssets = computed(() => Object.values(props.assets).filter(asset => asset.kind === 'audio'));
 const musicAsset = computed(() => props.document.audio ? props.assets[props.document.audio.assetId] : undefined);
 const layerElements = computed(() => [...props.document.elements].reverse());
+const artworkPalette = computed(() => [...new Set([
+  ...props.document.elements.flatMap(element => element.type === 'shape' ? [element.fill, element.stroke]
+    : element.type === 'text' ? [element.color, element.stroke, element.backgroundColor]
+    : element.type === 'drawing' ? [element.color] : [element.borderColor]),
+  props.document.photoFrame.color, props.document.background.color, props.document.background.patternColor,
+].filter(value => value && tinycolor(value).isValid() && tinycolor(value).getAlpha() > 0))]);
 const selectedLayerIndex = computed(() => props.document.elements.findIndex(element => element.id === selectedElement.value?.id));
 const previewImages = computed(() => props.document.mode === 'grid'
   ? props.document.slots.map(slot => slot.assetId ? props.assets[slot.assetId]?.thumbnail ?? '' : '')
@@ -67,6 +86,7 @@ function checked(event: Event) { return (event.target as HTMLInputElement).check
 function patchDocument(patch: Partial<EditorDocument>, commit = true) { act({ type: 'document', patch, commit }); }
 function patchElement(patch: Partial<SceneElement>, commit = true) { if (selectedElement.value) act({ type: 'element', patch, commit }); }
 function patchImage(patch: Partial<ImageElement> & Partial<CollageSlot>, commit = true) {
+  if (imageTarget.value?.locked) return;
   if (selectedSlot.value) act({ type: 'slot', patch, commit });
   else if (selectedImage.value) act({ type: 'element', patch, commit });
 }
@@ -82,11 +102,20 @@ function chooseBrush(mode: 'pen' | 'highlighter' | 'eraser') {
   act({ type: 'tool', tool: mode === 'eraser' ? 'erase' : 'draw' });
   act({ type: 'brush', highlighter: mode === 'highlighter' });
 }
+function centerSelectedElement() {
+  const element = selectedElement.value;
+  if (!element || element.locked) return;
+  patchElement({ x: (props.document.width - element.width) / 2, y: (props.document.height - element.height) / 2 });
+}
 function layerName(element: SceneElement) {
   if (element.type === 'text') return element.text.trim().replace(/\s+/g, ' ').slice(0, 32) || '空白文字';
   if (element.type === 'image') return props.assets[element.assetId]?.name || '照片图层';
   if (element.type === 'drawing') return element.tool === 'highlighter' ? '荧光笔涂鸦' : element.tool === 'eraser' ? '橡皮擦笔迹' : '画笔涂鸦';
-  return `${shapes.find(shape => shape.value === element.shape)?.label || '形状'}图层`;
+  const label = shapes.find(shape => shape.value === element.shape)?.label || '形状';
+  const filled = tinycolor(element.fill).getAlpha() > 0;
+  const stroked = element.strokeWidth > 0 && !!element.stroke && tinycolor(element.stroke).getAlpha() > 0;
+  const style = filled ? stroked ? '填充＋描边' : '填充' : stroked ? '空心描边' : '透明';
+  return `${label} · ${style} ${props.document.elements.findIndex(item => item.id === element.id) + 1}`;
 }
 function layerKind(element: SceneElement) {
   if (element.type === 'image') return props.assets[element.assetId]?.kind === 'video' ? '视频' : props.assets[element.assetId]?.mime === 'image/gif' ? 'GIF' : '照片';
@@ -97,21 +126,18 @@ function patchAudio(patch: Partial<NonNullable<EditorDocument['audio']>>, commit
 </script>
 
 <template>
-  <section class="editor-panel" :class="{ 'editor-panel-text': panel === 'text' }" :aria-label="titles[panel]">
+  <section ref="panelRoot" class="editor-panel" :class="{ 'editor-panel-text': panel === 'text' }" :aria-label="titles[panel]">
 
     <template v-if="panel === 'photos'">
-      <button type="button" class="primary wide" @click="act({ type: 'upload' })"><Upload :size="17" aria-hidden="true" />添加照片</button>
-      <p class="hint">原图保存在本机。点击照片替换当前格子，或在画布上直接调整裁切。</p>
-      <PanelMediaGrid :assets="visualAssets" :selected-id="imageTarget?.assetId" @select="assetId => act({ type: 'asset', assetId })" />
       <section v-if="imageTarget" class="tool-section">
         <h3>{{ selectedSlot ? '编辑照片格' : '编辑照片 / 视频' }}</h3>
         <p class="asset-caption">{{ selectedAsset?.name || '这个照片格还没有素材' }}</p>
-        <p v-if="selectedImage?.locked" class="hint">这张照片已锁定，请在「图层管理」中解锁后调整。</p>
-        <fieldset class="control-group" :disabled="selectedImage?.locked">
+        <p v-if="imageTarget.locked" class="hint">这张照片已锁定，请在「图层管理」中解锁后调整。</p>
+        <fieldset class="control-group" :disabled="imageTarget.locked">
         <div class="button-row"><button type="button" @click="act({ type: 'replace' })"><ImageIcon :size="15" aria-hidden="true" />上传并替换</button><button type="button" @click="act({ type: 'swap' })" :disabled="document.mode !== 'grid' || !selectedSlot">交换照片格</button></div>
         <template v-if="selectedAsset">
-          <h4>裁剪与构图</h4><p class="hint">下方可精确微调；关闭面板后，点画布中的照片进入单张裁切。</p>
-          <PanelRange label="裁剪缩放" :value="imageTarget.crop.zoom" :min="1" :max="5" :step=".01" unit="倍" @input="value => patchCrop({ zoom: value }, false)" @commit="checkpoint" />
+          <h4>裁剪与构图</h4><p class="hint">可精确微调；也可在画布上点选照片后使用「取景」。</p>
+          <PanelRange label="裁剪缩放" :value="imageTarget.crop.zoom" :min="MIN_CROP_ZOOM" :max="MAX_CROP_ZOOM" :step=".01" unit="倍" @input="value => patchCrop({ zoom: value }, false)" @commit="checkpoint" />
           <PanelRange label="水平平移" :value="imageTarget.crop.x" :min="-1" :max="1" :step=".01" @input="value => patchCrop({ x: value }, false)" @commit="checkpoint" />
           <PanelRange label="垂直平移" :value="imageTarget.crop.y" :min="-1" :max="1" :step=".01" @input="value => patchCrop({ y: value }, false)" @commit="checkpoint" />
           <PanelRange label="照片旋转" :value="imageTarget.crop.rotation" :min="-180" :max="180" unit="°" @input="value => patchCrop({ rotation: value }, false)" @commit="checkpoint" />
@@ -121,10 +147,10 @@ function patchAudio(patch: Partial<NonNullable<EditorDocument['audio']>>, commit
           <template v-if="selectedImage">
             <h4>边框与外观</h4>
             <PanelRange label="边框宽度" :value="selectedImage.borderWidth" :min="0" :max="60" unit="px" @input="value => patchElement({ borderWidth: value }, false)" @commit="checkpoint" />
-            <ColorPicker label="边框颜色" :value="selectedImage.borderColor" @input="value => patchElement({ borderColor: value }, false)" @commit="checkpoint" />
+            <ColorPicker label="边框颜色" :value="selectedImage.borderColor" :palette="artworkPalette" @input="value => patchElement({ borderColor: value }, false)" @commit="checkpoint" />
             <PanelRange label="照片圆角" :value="selectedImage.cornerRadius" :min="0" :max="Math.min(selectedImage.width, selectedImage.height) / 2" unit="px" @input="value => patchElement({ cornerRadius: value }, false)" @commit="checkpoint" />
             <PanelRange label="照片阴影" :value="selectedImage.shadow" :min="0" :max="80" @input="value => patchElement({ shadow: value }, false)" @commit="checkpoint" />
-            <PanelRange label="照片不透明度" :value="selectedImage.opacity" :min="0" :max="1" :step=".01" @input="value => patchElement({ opacity: value }, false)" @commit="checkpoint" />
+            <PanelRange label="照片不透明度" :value="Math.round(selectedImage.opacity * 100)" :min="0" :max="100" unit="%" @input="value => patchElement({ opacity: value / 100 }, false)" @commit="checkpoint" />
           </template>
           <template v-if="selectedAsset.kind === 'video'">
             <h4>视频片段</h4>
@@ -141,11 +167,6 @@ function patchAudio(patch: Partial<NonNullable<EditorDocument['audio']>>, commit
           <PanelRange label="模糊" :value="imageTarget.filter.blur" :min="0" :max="20" :step=".1" @input="value => patchFilter({ blur: value }, false)" @commit="checkpoint" />
           <div class="button-row"><label class="check-field"><input type="checkbox" :checked="imageTarget.filter.grayscale" @change="event => patchFilter({ grayscale: checked(event) })" />黑白</label><label class="check-field"><input type="checkbox" :checked="imageTarget.filter.sepia" @change="event => patchFilter({ sepia: checked(event) })" />棕褐色</label></div>
           </details>
-          <details class="photo-details"><summary>高级：移除照片背景</summary>
-          <button type="button" class="wide" :disabled="selectedAsset.kind !== 'image' || selectedAsset.mime === 'image/gif'" @click="act({ type: 'cutout', model: 'portrait' })"><Scissors :size="16" aria-hidden="true" />快速人像抠图</button>
-          <button type="button" class="wide" :disabled="selectedAsset.kind !== 'image' || selectedAsset.mime === 'image/gif'" @click="act({ type: 'cutout', model: 'subject' })"><Scissors :size="16" aria-hidden="true" />通用主体抠图 · 人物 / 宠物 / 物品</button>
-          <p class="hint">仅静态照片，在本机识别并移除背景，不生成图片。首次需下载模型；通用 U²-Netp 模型约 4.6 MB，以 320 像素识别主体。复杂主体、毛发与细小边缘请检查效果，不支持视频、GIF 或贴纸。</p>
-          </details>
         </template>
         <p v-else class="hint">选择上方本地素材或上传照片，填入当前照片格。</p>
         </fieldset>
@@ -154,8 +175,6 @@ function patchAudio(patch: Partial<NonNullable<EditorDocument['audio']>>, commit
     </template>
 
     <template v-else-if="panel === 'layouts'">
-      <div class="segmented" aria-label="拼贴模式"><button type="button" :aria-pressed="document.mode === 'grid'" @click="patchDocument({ mode: 'grid' })">照片格拼贴</button><button type="button" :aria-pressed="document.mode === 'free'" @click="patchDocument({ mode: 'free' })">自由拼贴</button></div>
-      <p class="hint">照片格自动排版；自由拼贴可以拖动、缩放和叠放每个元素。</p>
       <div class="field"><span>照片数量</span><AppSelect :value="photoCount" :options="photoCountOptions" label="照片数量" @change="changePhotoCount" /></div>
       <p class="hint">支持 1–{{ MAX_COLLAGE_PHOTOS }} 张。减少照片请先使用「整理照片」，更换布局不会隐藏已有照片。</p>
       <button v-if="layoutSuggestion" type="button" class="wide recommend-layout" @click="act({ type: 'layout', layout: layoutSuggestion })"><Check :size="14" aria-hidden="true" />按照片比例推荐布局</button>
@@ -172,16 +191,16 @@ function patchAudio(patch: Partial<NonNullable<EditorDocument['audio']>>, commit
     </template>
 
     <template v-else-if="panel === 'templates'">
-      <p class="hint">原创排版，可继续编辑照片、文字和装饰。使用模板会替换本页的版式。</p>
-      <TemplateGallery @select="template => act({ type: 'template', template })" />
+      <p class="hint">用当前照片预览。应用前会确认替换本页排版、文字与装饰，保留全部照片。</p>
+      <TemplateGallery ref="templateGallery" :photos="previewPhotos" :current-ratio="document.width / document.height" @preview="open => emit('templatePreview', open)" @select="template => act({ type: 'template', template })" />
     </template>
 
     <template v-else-if="panel === 'background'">
-      <ColorPicker label="背景颜色" :value="document.background.color" allow-transparent @input="value => patchBackground({ color: value }, false)" @commit="checkpoint" />
+      <ColorPicker label="背景颜色" :value="document.background.color" :palette="artworkPalette" allow-transparent @input="value => patchBackground({ color: value }, false)" @commit="checkpoint" />
       <label class="check-field"><input type="checkbox" :checked="document.background.color === 'transparent'" @change="event => patchBackground(checked(event) ? { color: 'transparent', pattern: 'none', assetId: null } : { color: '#ffffff' })" />透明背景</label>
       <p class="hint">透明背景可用于 PNG、WebP 导出；图案或背景照片会覆盖透明区域。</p>
       <div class="field"><span>背景图案</span><AppSelect :value="document.background.pattern" :options="patterns" label="背景图案" @change="value => patchBackground({ pattern: value as PatternKind })" /></div>
-      <ColorPicker label="图案颜色" :value="document.background.patternColor" @input="value => patchBackground({ patternColor: value }, false)" @commit="checkpoint" />
+      <ColorPicker label="图案颜色" :value="document.background.patternColor" :palette="artworkPalette" @input="value => patchBackground({ patternColor: value }, false)" @commit="checkpoint" />
       <section class="tool-section"><h3>照片背景</h3><button type="button" class="wide" @click="act({ type: 'upload' })"><Upload :size="16" aria-hidden="true" />上传背景照片</button><p class="hint">上传后点击下方照片设为背景，不影响前景素材。</p><PanelMediaGrid :assets="backgroundAssets" :selected-id="document.background.assetId" label="设为背景" @select="assetId => act({ type: 'backgroundAsset', assetId })" /><button type="button" class="wide" :disabled="!document.background.assetId" @click="act({ type: 'backgroundAsset', assetId: null })">移除背景照片</button></section>
     </template>
 
@@ -195,24 +214,43 @@ function patchAudio(patch: Partial<NonNullable<EditorDocument['audio']>>, commit
       <section class="tool-section"><h3>添加形状</h3>
         <button type="button" class="primary wide" @click="act({ type: 'addShape', shape: 'rect' })"><Shapes :size="17" aria-hidden="true" />＋ 添加矩形</button>
         <div class="chips" role="group" aria-label="添加其他形状"><button v-for="shape in shapes.filter(item => item.value !== 'rect')" :key="shape.value" type="button" @click="act({ type: 'addShape', shape: shape.value })"><Shapes :size="15" aria-hidden="true" />添加{{ shape.label }}</button></div>
-        <p class="hint">添加后自动回到选择模式。被照片遮住的装饰，可在「更多 → 图层管理」中选择。</p>
+        <p class="hint">添加后自动回到选择模式。被照片遮住的装饰，可在「工具 → 图层管理」中选择。</p>
       </section>
-      <section v-if="selectedShape" class="tool-section"><ShapeControls :key="selectedShape.id" :shape="selectedShape" :canvas-width="document.width" :canvas-height="document.height" :fill-color="brushColor" @action="act" /></section>
+      <section v-if="selectedShape" class="tool-section"><ShapeControls :key="selectedShape.id" :shape="selectedShape" :canvas-width="document.width" :canvas-height="document.height" :fill-color="brushColor" :palette="artworkPalette" @action="act" /></section>
       <p v-else class="hint">选择画布上的形状，可修改填充、描边、大小、不透明度或删除。</p>
       <h3>自由涂鸦</h3>
       <div class="segmented" aria-label="绘画工具"><button type="button" :aria-pressed="tool === 'draw' && !highlighter" @click="chooseBrush('pen')"><Pencil :size="15" aria-hidden="true" />画笔</button><button type="button" :aria-pressed="tool === 'draw' && highlighter" @click="chooseBrush('highlighter')">荧光笔</button><button type="button" :aria-pressed="tool === 'erase'" @click="chooseBrush('eraser')">橡皮擦</button></div>
-      <p class="hint">橡皮擦会使下方画布内容透明（包括照片显示区域），不修改素材原图。普通拼图建议使用替换、删除或裁切。</p>
+      <p class="hint">橡皮擦只擦除涂鸦笔迹，不改变照片、背景或其他图层，也不修改素材原图。</p>
       <PanelRange label="画笔大小" :value="brushSize" :min="1" :max="100" unit="px" @input="value => act({ type: 'brush', size: value })" @commit="checkpoint" />
-      <ColorPicker label="画笔颜色" :value="brushColor" @input="value => act({ type: 'brush', color: value })" @commit="checkpoint" />
+      <ColorPicker label="画笔颜色" :value="brushColor" :palette="artworkPalette" @input="value => act({ type: 'brush', color: value })" @commit="checkpoint" />
       <button type="button" class="primary wide" @click="act({ type: 'tool', tool: 'select' })"><Check :size="16" aria-hidden="true" />完成绘画，回到选择</button>
       <section v-if="selectedDrawing" class="tool-section"><h3>所选涂鸦</h3>
         <p v-if="selectedDrawing.locked" class="hint">涂鸦已锁定，请在「图层管理」中解锁后编辑。</p>
-        <ColorPicker label="涂鸦颜色" :value="selectedDrawing.color" :disabled="selectedDrawing.locked" @input="value => patchElement({ color: value }, false)" @commit="checkpoint" />
+        <ColorPicker label="涂鸦颜色" :value="selectedDrawing.color" :palette="artworkPalette" :disabled="selectedDrawing.locked" @input="value => patchElement({ color: value }, false)" @commit="checkpoint" />
         <PanelRange label="涂鸦线宽" :value="selectedDrawing.strokeWidth" :disabled="selectedDrawing.locked" :min="1" :max="100" unit="px" @input="value => patchElement({ strokeWidth: value }, false)" @commit="checkpoint" />
       </section>
     </template>
 
     <template v-else-if="panel === 'layers'">
+      <section v-if="selectedElement" class="tool-section"><h3>所选图层</h3><p class="asset-caption">{{ layerName(selectedElement) }}</p>
+        <div class="button-row" role="group" aria-label="图层状态">
+          <button type="button" :aria-pressed="selectedElement.locked" @click="patchElement({ locked: !selectedElement.locked })"><Lock v-if="selectedElement.locked" :size="16" aria-hidden="true" /><LockOpen v-else :size="16" aria-hidden="true" />{{ selectedElement.locked ? '解锁图层' : '锁定图层' }}</button>
+          <button type="button" :disabled="selectedElement.locked" :aria-pressed="!selectedElement.visible" @click="patchElement({ visible: !selectedElement.visible })"><Eye v-if="selectedElement.visible" :size="16" aria-hidden="true" /><EyeOff v-else :size="16" aria-hidden="true" />{{ selectedElement.visible ? '隐藏图层' : '显示图层' }}</button>
+        </div>
+        <p v-if="selectedElement.locked" class="hint">已锁定，解锁后可调整；仍可复制为一个新图层。</p>
+        <ShapeControls v-if="selectedShape" :key="selectedShape.id" :shape="selectedShape" :canvas-width="document.width" :canvas-height="document.height" :fill-color="brushColor" :palette="artworkPalette" @action="act" />
+        <button v-else type="button" class="wide" :disabled="selectedElement.locked" @click="centerSelectedElement"><LocateFixed :size="16" aria-hidden="true" />居中找回 · 可撤销</button>
+        <h4>叠放顺序</h4>
+        <div class="button-row"><button type="button" :disabled="selectedElement.locked || selectedLayerIndex === document.elements.length - 1" @click="act({ type: 'layer', direction: 'up' })"><ArrowUp :size="15" aria-hidden="true" />上移一层</button><button type="button" :disabled="selectedElement.locked || selectedLayerIndex === 0" @click="act({ type: 'layer', direction: 'down' })"><ArrowDown :size="15" aria-hidden="true" />下移一层</button></div>
+        <div class="button-row"><button type="button" :disabled="selectedElement.locked || selectedLayerIndex === document.elements.length - 1" @click="act({ type: 'layer', direction: 'front' })"><MoveUp :size="15" aria-hidden="true" />置于顶层</button><button type="button" :disabled="selectedElement.locked || selectedLayerIndex === 0" @click="act({ type: 'layer', direction: 'back' })"><MoveDown :size="15" aria-hidden="true" />置于底层</button></div>
+        <h4>图层外观</h4>
+        <PanelRange label="图层不透明度" :disabled="selectedElement.locked" :value="Math.round(selectedElement.opacity * 100)" :min="0" :max="100" unit="%" @input="value => patchElement({ opacity: value / 100 }, false)" @commit="checkpoint" />
+        <PanelRange label="图层旋转" :disabled="selectedElement.locked" :value="selectedElement.rotation" :min="-180" :max="180" unit="°" @input="value => patchElement({ rotation: value }, false)" @commit="checkpoint" />
+        <PanelRange label="图层阴影" :disabled="selectedElement.locked" :value="selectedElement.shadow" :min="0" :max="80" @input="value => patchElement({ shadow: value }, false)" @commit="checkpoint" />
+        <div class="button-row"><button type="button" @click="act({ type: 'duplicate' })"><Copy :size="15" aria-hidden="true" />复制图层</button><button type="button" class="danger" :disabled="selectedElement.locked" @click="act({ type: 'remove' })"><Trash2 :size="15" aria-hidden="true" />删除图层</button></div>
+      </section>
+      <section v-else-if="selectedSlot" class="tool-section"><h3>照片格素材</h3><p class="hint">照片格位置由布局管理。使用照片面板调整裁剪；删除只清空照片，不删除布局。</p><div class="button-row"><button type="button" :aria-pressed="selectedSlot.locked" @click="act({ type: 'slot', patch: { locked: !selectedSlot.locked } })">{{ selectedSlot.locked ? '解锁照片格' : '锁定照片格' }}</button><button type="button" :disabled="selectedSlot.locked" :aria-pressed="!selectedSlot.visible" @click="act({ type: 'slot', patch: { visible: !selectedSlot.visible } })">{{ selectedSlot.visible ? '隐藏照片格' : '显示照片格' }}</button></div><button type="button" class="danger wide" :disabled="selectedSlot.locked || !selectedSlot.assetId" @click="act({ type: 'remove' })"><Trash2 :size="15" aria-hidden="true" />清空照片格</button></section>
+      <p v-else class="empty-guidance">选择一个图层后可调整顺序、透明度、旋转、复制或删除。</p>
       <p class="hint">上方图层显示在最前面。被照片遮住的矩形等装饰，也可在这里点选并编辑颜色、大小或删除；隐藏图层不参与导出。</p>
       <div v-if="layerElements.length || document.mode === 'grid'" class="layer-list" aria-label="画布图层">
         <div v-for="element in layerElements" :key="element.id" class="layer-row" :class="{ selected: selection?.kind === 'element' && selection.id === element.id, hidden: !element.visible }">
@@ -221,32 +259,17 @@ function patchAudio(patch: Partial<NonNullable<EditorDocument['audio']>>, commit
             <Type v-else-if="element.type === 'text'" :size="20" aria-hidden="true" />
             <ImageIcon v-else-if="element.type === 'image'" :size="20" aria-hidden="true" />
             <Pencil v-else-if="element.type === 'drawing'" :size="20" aria-hidden="true" />
-            <Shapes v-else :size="20" aria-hidden="true" />
+            <svg v-else-if="element.type === 'shape'" class="shape-thumbnail" :viewBox="`${-element.strokeWidth / 2 - 2} ${-element.strokeWidth / 2 - 2} ${element.width + element.strokeWidth + 4} ${element.height + element.strokeWidth + 4}`" aria-hidden="true" focusable="false">
+              <path :d="shapePath(element.shape, element.width, element.height)" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="2 2" vector-effect="non-scaling-stroke" opacity=".4" />
+              <path :d="shapePath(element.shape, element.width, element.height)" :fill="element.fill || 'none'" :stroke="element.stroke || 'none'" :stroke-width="element.strokeWidth" :opacity="element.opacity" />
+            </svg>
             <span><strong>{{ layerName(element) }}</strong><small>{{ layerKind(element) }}{{ element.locked ? ' · 已锁定' : '' }}{{ !element.visible ? ' · 已隐藏' : '' }}</small></span>
             <Check v-if="selection?.kind === 'element' && selection.id === element.id" class="layer-check" :size="18" aria-hidden="true" />
           </button>
         </div>
-        <template v-if="document.mode === 'grid'"><button v-for="(slot, index) in document.slots" :key="slot.id" type="button" class="slot-layer" :aria-pressed="selection?.kind === 'slot' && selection.id === slot.id" @click="act({ type: 'select', id: slot.id })"><ImageIcon :size="17" aria-hidden="true" /><span>照片格 {{ index + 1 }}<small>{{ slot.assetId ? assets[slot.assetId]?.name || '照片' : '空白照片格' }}</small></span></button></template>
+        <template v-if="document.mode === 'grid'"><button v-for="(slot, index) in document.slots" :key="slot.id" type="button" class="slot-layer" :aria-pressed="selection?.kind === 'slot' && selection.id === slot.id" @click="act({ type: 'select', id: slot.id })"><ImageIcon :size="17" aria-hidden="true" /><span>照片格 {{ index + 1 }}<small>{{ slot.assetId ? assets[slot.assetId]?.name || '照片' : '空白照片格' }}{{ slot.locked ? ' · 已锁定' : '' }}{{ !slot.visible ? ' · 已隐藏' : '' }}</small></span></button></template>
       </div>
       <p v-else class="empty-guidance">画布还没有图层。先添加照片、文字、贴纸或涂鸦。</p>
-      <section v-if="selectedElement" class="tool-section"><h3>所选图层</h3><p class="asset-caption">{{ layerName(selectedElement) }}</p>
-        <div class="button-row" role="group" aria-label="图层状态">
-          <button type="button" :aria-pressed="selectedElement.locked" @click="patchElement({ locked: !selectedElement.locked })"><Lock v-if="selectedElement.locked" :size="16" aria-hidden="true" /><LockOpen v-else :size="16" aria-hidden="true" />{{ selectedElement.locked ? '解锁图层' : '锁定图层' }}</button>
-          <button type="button" :disabled="selectedElement.locked" :aria-pressed="!selectedElement.visible" @click="patchElement({ visible: !selectedElement.visible })"><Eye v-if="selectedElement.visible" :size="16" aria-hidden="true" /><EyeOff v-else :size="16" aria-hidden="true" />{{ selectedElement.visible ? '隐藏图层' : '显示图层' }}</button>
-        </div>
-        <p v-if="selectedElement.locked" class="hint">已锁定，解锁后可调整；仍可复制为一个新图层。</p>
-        <ShapeControls v-if="selectedShape" :key="selectedShape.id" :shape="selectedShape" :canvas-width="document.width" :canvas-height="document.height" :fill-color="brushColor" @action="act" />
-        <h4>叠放顺序</h4>
-        <div class="button-row"><button type="button" :disabled="selectedElement.locked || selectedLayerIndex === document.elements.length - 1" @click="act({ type: 'layer', direction: 'up' })"><ArrowUp :size="15" aria-hidden="true" />上移一层</button><button type="button" :disabled="selectedElement.locked || selectedLayerIndex === 0" @click="act({ type: 'layer', direction: 'down' })"><ArrowDown :size="15" aria-hidden="true" />下移一层</button></div>
-        <div class="button-row"><button type="button" :disabled="selectedElement.locked || selectedLayerIndex === document.elements.length - 1" @click="act({ type: 'layer', direction: 'front' })"><MoveUp :size="15" aria-hidden="true" />置于顶层</button><button type="button" :disabled="selectedElement.locked || selectedLayerIndex === 0" @click="act({ type: 'layer', direction: 'back' })"><MoveDown :size="15" aria-hidden="true" />置于底层</button></div>
-        <h4>图层外观</h4>
-        <PanelRange label="图层不透明度" :disabled="selectedElement.locked" :value="selectedElement.opacity" :min="0" :max="1" :step=".01" @input="value => patchElement({ opacity: value }, false)" @commit="checkpoint" />
-        <PanelRange label="图层旋转" :disabled="selectedElement.locked" :value="selectedElement.rotation" :min="-180" :max="180" unit="°" @input="value => patchElement({ rotation: value }, false)" @commit="checkpoint" />
-        <PanelRange label="图层阴影" :disabled="selectedElement.locked" :value="selectedElement.shadow" :min="0" :max="80" @input="value => patchElement({ shadow: value }, false)" @commit="checkpoint" />
-        <div class="button-row"><button type="button" @click="act({ type: 'duplicate' })"><Copy :size="15" aria-hidden="true" />复制图层</button><button type="button" class="danger" :disabled="selectedElement.locked" @click="act({ type: 'remove' })"><Trash2 :size="15" aria-hidden="true" />删除图层</button></div>
-      </section>
-      <section v-else-if="selectedSlot" class="tool-section"><h3>照片格素材</h3><p class="hint">照片格位置由布局管理。使用照片面板调整裁剪；删除只清空照片，不删除布局。</p><button type="button" class="danger wide" :disabled="!selectedSlot.assetId" @click="act({ type: 'remove' })"><Trash2 :size="15" aria-hidden="true" />清空照片格</button></section>
-      <p v-else class="empty-guidance">选择一个图层后可调整顺序、透明度、旋转、复制或删除。</p>
     </template>
 
     <template v-else-if="panel === 'animation'">
@@ -300,9 +323,6 @@ function patchAudio(patch: Partial<NonNullable<EditorDocument['audio']>>, commit
 .field>span { color: var(--muted); }
 .check-field { display: flex; align-items: center; gap: 10px; font-size: 12px; min-height: 44px; line-height: 1.5; cursor: pointer; }
 .check-field input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
-.segmented { display: flex; gap: 4px; padding: 4px; background: var(--control); border-radius: 18px; }
-.segmented button:not(.app-select-trigger) { flex: 1; min-width: 0; background: transparent; padding: 10px 5px; }
-.segmented button:not(.app-select-trigger)[aria-pressed=true] { background: var(--surface-raised); color: var(--accent); box-shadow: var(--shadow-card); font-weight: 600; }
 .chips { display: flex; gap: 7px; flex-wrap: wrap; }
 .chips button:not(.app-select-trigger) { border-radius: 999px; flex: 1 1 76px; min-width: 44px; }
 .layer-list { display: grid; gap: 9px; min-width: 0; max-height: min(32dvh, 280px); overflow-y: auto; overscroll-behavior-y: contain; padding: 2px; }
@@ -312,6 +332,7 @@ function patchAudio(patch: Partial<NonNullable<EditorDocument['audio']>>, commit
 .editor-panel .layer-select:not(.app-select-trigger) { width: 100%; justify-content: flex-start; background: transparent; padding: 6px 8px; min-width: 0; text-align: left; gap: 10px; }
 .layer-select>svg { flex: none; }
 .layer-thumbnail { flex: none; width: 40px; height: 44px; object-fit: cover; border-radius: 9px; background: var(--control); }
+.shape-thumbnail { flex: none; width: 40px; height: 44px; padding: 4px; border-radius: 9px; color: var(--ink); background: repeating-conic-gradient(#d4d9d1 0% 25%, #fff 0% 50%) 50% / 8px 8px; }
 .layer-select>span { display: grid; flex: 1; gap: 3px; min-width: 0; }
 .layer-select strong { font-size: 12px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .layer-select small, .slot-layer small { font-size: 11px; color: var(--muted); }

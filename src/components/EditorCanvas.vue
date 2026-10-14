@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, createVNode, getCurrentInstance, nextTick, onBeforeUnmount, onMounted, ref, render as renderVNode, watch } from 'vue';
 import Konva from 'konva';
-import { createPhotoFrame, slotRect } from '../defaults';
-import type { CropChange, CropState, DrawingChange, EditorCanvasHandle, EditorDocument, FilterState, ImageElement, MediaAsset, SceneElement, Selection, TransformChange } from '../types';
+import { createPhotoFrame, slotRect, MIN_CROP_ZOOM, MAX_CROP_ZOOM } from '../defaults';
+import type { CropChange, CropState, DrawingChange, DrawingElement, EditorCanvasHandle, EditorDocument, FilterState, ImageElement, MediaAsset, SceneElement, Selection, TransformChange } from '../types';
 import { animationAt, curvedTextPath, imageGeometry, shapePath } from './canvasGeometry';
 import { filmPerforationPath, photoFrameGeometry } from './photoFrameGeometry';
 import { measureTextHeight, textFrameHeight, textNodeConfig, textPadding } from './textLayout';
@@ -29,12 +29,16 @@ const emit = defineEmits<{
   draw: [change: DrawingChange]; requestAsset: [slotId: string]; editText: [elementId: string]; error: [message: string];
   inlineStart: [selection: NonNullable<Selection>]; inlineEnd: [result: { cancelled: boolean }];
 }>();
+const instance = getCurrentInstance()!;
 
 const host = ref<HTMLDivElement>();
 const plainFrame = createPhotoFrame();
 const stageRef = ref<{ getNode: () => Konva.Stage }>();
-const viewport = ref({ width: 320, height: 320, scale: 320 / 1080 });
-const stageConfig = computed(() => ({ width: viewport.value.width, height: viewport.value.height, scaleX: viewport.value.scale, scaleY: viewport.value.scale }));
+const viewport = ref({ width: 320, height: 320, scale: 320 / 1080, x: 0, y: 0 });
+const fitScale = ref(320 / 1080);
+const zoom = ref(1);
+const longCanvas = ref(false);
+const stageConfig = computed(() => ({ width: viewport.value.width, height: viewport.value.height, x: viewport.value.x, y: viewport.value.y, scaleX: viewport.value.scale, scaleY: viewport.value.scale }));
 let stage: Konva.Stage | undefined;
 let layer: Konva.Layer | undefined;
 let root: Konva.Group | undefined;
@@ -53,17 +57,27 @@ let raf = 0;
 let clockStart = 0;
 let previewTime = 0;
 let exportQueue: Promise<unknown> = Promise.resolve();
+let documentRenderer: HTMLDivElement | undefined;
 let liveFramePromise: Promise<void> = Promise.resolve();
 const resources = new Map<string, CanvasMedia>();
 const elementNodes = new Map<string, Konva.Group>();
-const placeholderNodes: Konva.Node[] = [];
+let placeholderNodes: Konva.Node[] = [];
+interface DrawingBinding { element: DrawingElement; group: Konva.Group; line: Konva.Line; maskCount: number; dirty?: boolean; bounds?: ReturnType<Konva.Line['getClientRect']> }
+interface EraseMask { binding: DrawingBinding; group: Konva.Group; line: Konva.Line; transform: Konva.Transform; matrix: number[] }
+const drawingBindings: DrawingBinding[] = [];
+const eraserBindings: Array<{ node: Konva.Group; masks: EraseMask[] }> = [];
 interface VideoBinding { video: HTMLVideoElement; image: Konva.Image; start: number; end: number; muted: boolean; playBlocked?: boolean; playPending?: boolean }
-const videos: VideoBinding[] = [];
+let videos: VideoBinding[] = [];
 const animatedAssets = new Map<string, MediaAsset>();
 interface PictureBinding { asset: MediaAsset; image: Konva.Image; source: CanvasMedia['source']; blur: number }
-const pictures: PictureBinding[] = [];
-const animatedBindings: { assetId: string; image: Konva.Image }[] = [];
+let pictures: PictureBinding[] = [];
+let animatedBindings: { assetId: string; image: Konva.Image }[] = [];
 const pointers = new Map<number, { x: number; y: number }>();
+const screenPointers = new Map<number, Point>();
+let navigationGesture: { center: Point; distance: number; scale: number; x: number; y: number } | undefined;
+let navigationCandidate: { pointerId: number; start: Point } | undefined;
+const idleWaiters = new Set<() => void>();
+let pendingFit = false;
 type Point = { x: number; y: number };
 interface CropSource {
   crop: CropState; width: number; height: number; rotation: number; center: Point;
@@ -77,16 +91,51 @@ let hold: { pointerId: number; selection: NonNullable<Selection>; screen: Point;
 const inlineActive = ref(false);
 let suppressTapUntil = 0;
 const compatibilityEvents = ['mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend', 'click', 'dblclick'] as const;
-let drawing: { points: number[]; line: Konva.Line; tool: DrawingChange['tool'] } | undefined;
+let drawing: { points: number[]; line: Konva.Line; tool: DrawingChange['tool']; masks?: EraseMask[] } | undefined;
 
-function resize() {
-  if (!host.value || exporting) return;
+function notifyIdle() {
+  if (interaction || pointers.size) return;
+  for (const resolve of idleWaiters) resolve();
+  idleWaiters.clear();
+}
+
+function waitForIdle() {
+  if (!interaction && !pointers.size) return Promise.resolve();
+  return new Promise<void>(resolve => idleWaiters.add(resolve));
+}
+
+function clampOffset(value: number, viewportSize: number, contentSize: number) {
+  return contentSize <= viewportSize ? (viewportSize - contentSize) / 2 : Math.max(viewportSize - contentSize, Math.min(0, value));
+}
+
+function setViewport(scale: number, x: number, y: number) {
+  const doc = props.document;
+  viewport.value = { ...viewport.value, scale,
+    x: clampOffset(x, viewport.value.width, doc.width * scale),
+    y: clampOffset(y, viewport.value.height, doc.height * scale) };
+  stage?.scale({ x: scale, y: scale }).position({ x: viewport.value.x, y: viewport.value.y });
+  updateSelection();
+  layer?.batchDraw();
+}
+
+function resize(reset = false) {
+  if (!host.value) return;
+  if (exporting) { pendingFit ||= reset; return; }
+  reset ||= pendingFit; pendingFit = false;
+  const doc = props.document;
   const width = Math.max(1, host.value.clientWidth);
   const availableHeight = Math.max(1, host.value.clientHeight || window.innerHeight * .66);
-  const scale = Math.min(width / props.document.width, availableHeight / props.document.height);
-  viewport.value = { width: props.document.width * scale, height: props.document.height * scale, scale };
-  updateSelection();
+  longCanvas.value = doc.height > doc.width * 2 && doc.height * width / doc.width > availableHeight;
+  const previous = viewport.value;
+  const center = { x: (previous.width / 2 - previous.x) / previous.scale, y: (previous.height / 2 - previous.y) / previous.scale };
+  fitScale.value = longCanvas.value ? width / doc.width : Math.min(width / doc.width, availableHeight / doc.height);
+  if (reset) zoom.value = 1;
+  const scale = fitScale.value * zoom.value;
+  viewport.value = { ...previous, width: doc.width * fitScale.value, height: Math.min(availableHeight, doc.height * fitScale.value) };
+  stage?.size({ width: viewport.value.width, height: viewport.value.height });
+  setViewport(scale, reset ? 0 : viewport.value.width / 2 - center.x * scale, reset ? 0 : viewport.value.height / 2 - center.y * scale);
 }
+
 
 function resizeForViewport() {
   const previousScale = viewport.value.scale;
@@ -124,10 +173,11 @@ function addPicture(parent: Konva.Group, key: string, assetId: string, width: nu
   if (!resource || !asset) return;
   if (resource.source instanceof HTMLImageElement && !resource.source.naturalWidth) return;
   if (resource.source instanceof HTMLVideoElement && resource.source.readyState < 2) return;
-  const shape = options?.shape ?? props.document.slots.find(slot => `slot:${slot.id}` === key)?.shape ?? 'rect';
-  const treatment = key !== 'background' && asset.kind !== 'sticker' ? props.document.photoFrame : undefined;
+  const doc = props.document;
+  const shape = options?.shape ?? doc.slots.find(slot => `slot:${slot.id}` === key)?.shape ?? 'rect';
+  const treatment = key !== 'background' && asset.kind !== 'sticker' ? doc.photoFrame : undefined;
   const frame = photoFrameGeometry(width, height, treatment ?? plainFrame, asset.width, asset.height);
-  const radius = key === 'background' ? 0 : options?.cornerRadius ?? props.document.cornerRadius;
+  const radius = key === 'background' ? 0 : options?.cornerRadius ?? doc.cornerRadius;
   const data = shapePath(shape, frame.width, frame.height, Math.max(0, radius - frame.inset));
   const shadow = Math.max(frame.shadow, options?.shadow ?? 0);
   if (treatment && (treatment.kind !== 'none' || shadow)) {
@@ -253,15 +303,16 @@ function addElement(element: SceneElement) {
     group.add(text);
   }
   if (element.type === 'shape') group.add(new Konva.Path({ data: shapePath(element.shape, element.width, element.height), fill: element.fill, stroke: element.stroke, strokeWidth: element.strokeWidth, shadowColor: '#20202d', shadowBlur: element.shadow, shadowOffsetY: element.shadow * .3, shadowOpacity: .3, listening: false }));
-  if (element.type === 'drawing') {
-    const line = new Konva.Line({ points: element.points, stroke: element.color, strokeWidth: element.strokeWidth, lineCap: 'round', lineJoin: 'round', tension: .25, opacity: element.tool === 'highlighter' ? .4 : 1, globalCompositeOperation: element.tool === 'eraser' ? 'destination-out' : 'source-over', listening: false });
+  if (element.type === 'drawing' && element.tool !== 'eraser') {
+    const line = new Konva.Line({ points: element.points, stroke: element.color, strokeWidth: element.strokeWidth, lineCap: 'round', lineJoin: 'round', tension: .25, opacity: element.tool === 'highlighter' ? .4 : 1, listening: false });
     group.add(line);
-    if (element.tool === 'eraser') group.globalCompositeOperation('destination-out');
+    drawingBindings.push({ element, group, line, maskCount: 0 });
   }
   group.on('click tap', event => { event.cancelBubble = true; if (props.tool === 'select' && !suppressTap()) emit('select', { kind: 'element', id: element.id }); });
   group.on('dblclick dbltap', event => { event.cancelBubble = true; if (!suppressTap() && element.type === 'text' && !element.locked) emit('editText', element.id); });
-  group.on('dragstart transformstart', () => { interaction = true; emit('select', { kind: 'element', id: element.id }); });
+  group.on('dragstart transformstart', () => { if (navigationGesture) return; interaction = true; emit('select', { kind: 'element', id: element.id }); });
   group.on('dragend transformend', () => {
+    if (navigationGesture) return;
     const width = Math.max(8, group.width() * Math.abs(group.scaleX()));
     const height = Math.max(8, group.height() * Math.abs(group.scaleY()));
     let patch: Partial<SceneElement> = { x: group.x() - width / 2, y: group.y() - height / 2, width, height, rotation: group.rotation() };
@@ -273,10 +324,71 @@ function addElement(element: SceneElement) {
     };
     interaction = false;
     emit('transform', { id: element.id, patch });
+    notifyIdle();
     void nextTick().then(scheduleBuild);
   });
+  if (element.type === 'drawing') group.on('dragmove transform', () => { refreshEraseMasks(); layer?.batchDraw(); });
   root.add(group);
   elementNodes.set(element.id, group);
+}
+function cacheDrawing(binding: DrawingBinding, pixelRatio?: number) {
+  const group = binding.group;
+  binding.dirty = false;
+  group.clearCache();
+  if (!binding.maskCount) return;
+  const scale = group.getAbsoluteScale();
+  const ratio = pixelRatio ?? Math.max(.01, Math.min(1, Math.max(Math.abs(scale.x), Math.abs(scale.y)) * (layer?.getCanvas().getPixelRatio() ?? 1)));
+  const bounds = binding.bounds ??= binding.line.getClientRect({ skipTransform: true });
+  const width = Math.max(1, bounds.width), height = Math.max(1, bounds.height);
+  // Stroke edits can extend beyond the creation-time element frame.
+  // Tiny previews must still allocate at least one backing pixel on each axis.
+  group.cache({ ...bounds, width, height, pixelRatio: Math.max(ratio, 1 / Math.min(width, height)), hitCanvasPixelRatio: 1 });
+}
+function eraseMask(binding: DrawingBinding, source: Konva.Line, transform: Konva.Transform, opacity = 1): EraseMask {
+  const local = binding.group.getTransform().copy().invert().multiply(transform);
+  const group = new Konva.Group({ ...local.decompose(), opacity, listening: false, globalCompositeOperation: 'destination-out' });
+  const line = source.clone({ listening: false, globalCompositeOperation: 'destination-out' });
+  group.add(line); binding.group.add(group); binding.maskCount++;
+  return { binding, group, line, transform: local, matrix: local.getMatrix().slice() };
+}
+function applyStoredEraser(element: DrawingElement) {
+  const node = elementNodes.get(element.id);
+  if (!node) return;
+  const targets = element.eraseTargets ? new Set(element.eraseTargets) : null;
+  const source = new Konva.Line({ points: element.points, stroke: '#000', strokeWidth: element.strokeWidth, lineCap: 'round', lineJoin: 'round', tension: .25 });
+  const masks: EraseMask[] = [];
+  for (const binding of drawingBindings) {
+    if (targets ? targets.has(binding.element.id) : !binding.element.locked) masks.push(eraseMask(binding, source, node.getTransform(), element.opacity));
+  }
+  if (masks.length) eraserBindings.push({ node, masks });
+  source.destroy();
+}
+function updateEraseMask(mask: EraseMask, transform: Konva.Transform, opacity: number) {
+  mask.binding.group.getTransform().copyInto(mask.transform);
+  mask.transform.invert().multiply(transform);
+  const matrix = mask.transform.getMatrix();
+  let changed = mask.group.opacity() !== opacity;
+  for (let index = 0; index < matrix.length; index++) if (matrix[index] !== mask.matrix[index]) changed = true;
+  if (!changed) return;
+  mask.group.setAttrs({ ...mask.transform.decompose(), opacity });
+  for (let index = 0; index < matrix.length; index++) mask.matrix[index] = matrix[index]!;
+  mask.binding.dirty = true;
+}
+function refreshEraseMasks() {
+  if (!eraserBindings.length && !drawing?.masks?.length) return;
+  for (const binding of eraserBindings) for (const mask of binding.masks) updateEraseMask(mask, binding.node.getTransform(), binding.node.opacity());
+  if (drawing?.masks) for (const mask of drawing.masks) updateEraseMask(mask, drawing.line.getTransform(), 1);
+  // Export refreshes all caches once at the output pixel ratio below.
+  if (!exporting) for (const binding of drawingBindings) if (binding.dirty) cacheDrawing(binding);
+}
+function discardDrawingPreview(keepMasks = false) {
+  if (!drawing) return;
+  const preview = drawing; drawing = undefined;
+  preview.line.destroy();
+  if (!keepMasks) for (const mask of preview.masks ?? []) {
+    mask.group.destroy(); mask.binding.maskCount--; cacheDrawing(mask.binding);
+  }
+  layer?.batchDraw();
 }
 
 async function rebuild() {
@@ -284,21 +396,23 @@ async function rebuild() {
   pendingBuild = false;
   const generation = ++buildGeneration;
   const active = new Set<string>();
-  if (props.document.background.assetId) acquire('background', props.document.background.assetId, active);
-  if (props.document.mode === 'grid') for (const slot of props.document.slots) if (slot.assetId) acquire(`slot:${slot.id}`, slot.assetId, active);
-  for (const element of props.document.elements) if (element.type === 'image' && element.visible) acquire(`element:${element.id}`, element.assetId, active);
+  const doc = props.document;
+  if (doc.background.assetId) acquire('background', doc.background.assetId, active);
+  if (doc.mode === 'grid') for (const slot of doc.slots) if (slot.assetId && slot.visible) acquire(`slot:${slot.id}`, slot.assetId, active);
+  for (const element of doc.elements) if (element.type === 'image' && element.visible) acquire(`element:${element.id}`, element.assetId, active);
   await Promise.allSettled([...active].map(key => resources.get(key)!.ready));
-  await ensureSceneFonts(props.document.elements);
+  await ensureSceneFonts(doc.elements);
   if (!mounted || generation !== buildGeneration || interaction || exporting) { pendingBuild = true; return; }
   for (const [key, resource] of resources) if (!active.has(key)) { resource.dispose(); resources.delete(key); }
   transformer?.nodes([]);
   root?.destroy(); gizmos?.destroy();
   videos.length = 0; animatedAssets.clear(); animatedBindings.length = 0; pictures.length = 0; patternNode = undefined; elementNodes.clear(); placeholderNodes.length = 0;
-  const doc = props.document;
+  drawingBindings.length = 0; eraserBindings.length = 0;
   root = new Konva.Group({ clipX: 0, clipY: 0, clipWidth: doc.width, clipHeight: doc.height });
   layer.add(root);
   addBackground();
   if (doc.mode === 'grid') for (const slot of doc.slots) {
+    if (!slot.visible) continue;
     const rect = slotRect(doc, slot);
     const group = new Konva.Group({ ...rect, id: `slot:${slot.id}` });
     const data = shapePath(slot.shape, rect.width, rect.height, doc.cornerRadius);
@@ -308,13 +422,20 @@ async function rebuild() {
       const label = new Konva.Text({ text: '+\n添加照片', width: rect.width, height: rect.height, align: 'center', verticalAlign: 'middle', fontSize: Math.max(14, Math.min(32, rect.width / 10)), lineHeight: 1.5, fill: '#aa9282', listening: false });
       group.add(label); placeholderNodes.push(label);
     }
-    group.on('click tap', event => { event.cancelBubble = true; if (props.tool !== 'select' || suppressTap()) return; emit('select', { kind: 'slot', id: slot.id }); if (!slot.assetId) emit('requestAsset', slot.id); });
+    group.on('click tap', event => { event.cancelBubble = true; if (props.tool !== 'select' || suppressTap() || slot.locked) return; emit('select', { kind: 'slot', id: slot.id }); if (!slot.assetId) emit('requestAsset', slot.id); });
     root.add(group);
   }
-  for (const element of doc.elements) addElement(element);
+  for (const element of doc.elements) {
+    addElement(element);
+    if (element.type === 'drawing' && element.tool === 'eraser' && element.visible) applyStoredEraser(element);
+  }
+  for (const binding of drawingBindings) cacheDrawing(binding);
   gizmos = new Konva.Group(); layer.add(gizmos);
   selectionOutline = new Konva.Rect({ stroke: '#486252', strokeWidth: 2, dash: [8, 6], listening: false, visible: false });
-  transformer = new Konva.Transformer({ rotateEnabled: true, flipEnabled: false, anchorSize: 11, anchorCornerRadius: 6, borderStroke: '#486252', anchorStroke: '#486252', anchorFill: '#fff', padding: 3, ignoreStroke: true, boundBoxFunc: (oldBox, newBox) => Math.abs(newBox.width) < 12 || Math.abs(newBox.height) < 12 ? oldBox : newBox });
+  transformer = new Konva.Transformer({ rotateEnabled: true, flipEnabled: false, anchorSize: 11, anchorCornerRadius: 6,
+    anchorStyleFunc: anchor => { anchor.hitStrokeWidth(34); },
+    borderStroke: '#486252', anchorStroke: '#486252', anchorFill: '#fff', padding: 3, ignoreStroke: true,
+    boundBoxFunc: (oldBox, newBox) => Math.abs(newBox.width) < 12 || Math.abs(newBox.height) < 12 ? oldBox : newBox });
   gizmos.add(selectionOutline, transformer);
   await Promise.all(videos.map(binding => seekVideo(binding.video, binding.start + previewTime % Math.max(.01, binding.end - binding.start))));
   await updateAnimated(previewTime);
@@ -327,6 +448,7 @@ async function rebuild() {
 
 function scheduleBuild() {
   if (!mounted) return;
+  if (exporting) { pendingBuild = true; return; }
   buildPromise = rebuild().catch(error => emit('error', error instanceof Error ? error.message : '画布渲染失败。'));
 }
 
@@ -337,7 +459,7 @@ function updateSelection() {
   const selection = cropGesture?.selection ?? props.selection;
   if (selection?.kind === 'slot') {
     const slot = props.document.slots.find(item => item.id === selection.id);
-    if (slot) selectionOutline.setAttrs({ ...slotRect(props.document, slot), visible: true, strokeWidth: 2 / viewport.value.scale, dash: [6 / viewport.value.scale, 4 / viewport.value.scale] });
+    if (slot?.visible && !slot.locked) selectionOutline.setAttrs({ ...slotRect(props.document, slot), visible: true, strokeWidth: 2 / viewport.value.scale, dash: [6 / viewport.value.scale, 4 / viewport.value.scale] });
   } else {
     const element = props.document.elements.find(item => item.id === selection?.id);
     const node = element && elementNodes.get(element.id);
@@ -345,7 +467,13 @@ function updateSelection() {
       if (element.type === 'image' && (props.cropMode || props.inlineCropMode || inlineActive.value)) {
         const rect = node.getClientRect({ relativeTo: root });
         selectionOutline.setAttrs({ ...rect, visible: true, strokeWidth: 2 / viewport.value.scale, dash: [] });
-      } else transformer.nodes([node]);
+      } else {
+        const small = node.width() * viewport.value.scale < 100 || node.height() * viewport.value.scale < 100;
+        transformer.enabledAnchors(small ? ['top-left', 'top-right', 'bottom-left', 'bottom-right'] :
+          ['top-left', 'top-center', 'top-right', 'middle-left', 'middle-right', 'bottom-left', 'bottom-center', 'bottom-right']);
+        transformer.rotateAnchorOffset(small ? 40 : 30);
+        transformer.nodes([node]);
+      }
     }
   }
   layer?.batchDraw();
@@ -362,6 +490,7 @@ function applyTime(time: number, animate: boolean) {
     const motion = animationAt(animate ? element.animation : 'none', time, index * .67);
     node.setAttrs({ x: element.x + node.width() / 2 + motion.x, y: element.y + node.height() / 2 + motion.y, scaleX: motion.scale, scaleY: motion.scale, rotation: element.rotation + motion.rotation, opacity: element.opacity * motion.opacity });
   }
+  refreshEraseMasks();
 }
 
 function advanceVideos(time: number) {
@@ -429,7 +558,7 @@ function selectedCrop(selection: Selection, photosOnly = false): CropSource | un
   let crop: CropState, assetId: string, width: number, height: number, node: Konva.Group | undefined;
   if (selection.kind === 'slot') {
     const slot = props.document.slots.find(item => item.id === selection.id);
-    if (!slot?.assetId) return;
+    if (!slot?.assetId || !slot.visible || slot.locked) return;
     const rect = slotRect(props.document, slot);
     crop = slot.crop; assetId = slot.assetId; width = rect.width; height = rect.height;
     node = root.findOne<Konva.Group>((item: Konva.Node) => item.id() === `slot:${selection.id}`);
@@ -476,11 +605,33 @@ function releasePointer(id: number) {
   if (container?.hasPointerCapture(id)) container.releasePointerCapture(id);
 }
 
-function pointerPair() {
-  const values = [...pointers.values()];
+function pointerPair(screen = false) {
+  const values = [...(screen ? screenPointers : pointers).values()];
   const a = values[0], b = values[1];
   return { center: a && b ? { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } : a ?? { x: 0, y: 0 },
     distance: a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0 };
+}
+
+function screenPoint(event: PointerEvent | WheelEvent): Point {
+  const rect = stage!.container().getBoundingClientRect();
+  return { x: (event.clientX - rect.left) * viewport.value.width / Math.max(1, rect.width),
+    y: (event.clientY - rect.top) * viewport.value.height / Math.max(1, rect.height) };
+}
+
+function rebaseNavigation() {
+  const pair = pointerPair(true);
+  navigationGesture = { ...pair, scale: viewport.value.scale, x: viewport.value.x, y: viewport.value.y };
+}
+
+function startNavigation() {
+  clearHold(); navigationCandidate = undefined;
+  rebaseNavigation();
+  transformer?.stopTransform();
+  // A second finger takes ownership before native dragend can commit a transform.
+  for (const node of elementNodes.values()) if (node.isDragging()) node.stopDrag();
+  interaction = false; applyTime(previewTime, false); interaction = true;
+  syncDraggable(); capturePointers();
+  suppressTapUntil = performance.now() + 450;
 }
 
 function rebaseCrop() {
@@ -491,7 +642,7 @@ function rebaseCrop() {
 }
 
 function syncDraggable() {
-  for (const element of props.document.elements) elementNodes.get(element.id)?.draggable(!element.locked && props.tool === 'select' &&
+  for (const element of props.document.elements) elementNodes.get(element.id)?.draggable(!navigationGesture && !element.locked && props.tool === 'select' &&
     !(element.type === 'image' && (props.cropMode || props.inlineCropMode || inlineActive.value)));
 }
 
@@ -509,25 +660,33 @@ function finishInteraction(cancelled: boolean) {
   clearHold();
   const gesture = cropGesture;
   cropGesture = undefined;
-  if (gesture?.inline) suppressTapUntil = performance.now() + 450;
+  if (gesture?.inline || navigationGesture) suppressTapUntil = performance.now() + 450;
+  navigationGesture = undefined; navigationCandidate = undefined; screenPointers.clear();
   const ids = [...pointers.keys()]; pointers.clear();
   for (const id of ids) releasePointer(id);
-  if (drawing) { drawing.line.destroy(); drawing = undefined; }
-  if (!gesture && !interaction) return;
+  discardDrawingPreview();
+  if (!gesture && !interaction) { notifyIdle(); return; }
   inlineActive.value = false; interaction = false;
   if (gesture?.inline) emit('inlineEnd', { cancelled });
   syncDraggable(); updateSelection();
+  notifyIdle();
   void nextTick().then(() => { if (pendingBuild) scheduleBuild(); });
 }
 
 function pointerDown(event: PointerEvent) {
   if (exporting || props.playing || (event.pointerType === 'mouse' && event.button !== 0)) return;
   // A fresh intentional gesture must not inherit the previous hold's synthetic-tap guard.
-  if (!cropGesture) suppressTapUntil = 0;
+  if (!pointers.size) suppressTapUntil = 0;
   const position = point(event);
   pointers.set(event.pointerId, position);
+  screenPointers.set(event.pointerId, screenPoint(event));
   if (cropGesture) {
     event.preventDefault(); event.stopPropagation(); capturePointers(); rebaseCrop(); return;
+  }
+  if (!props.cropMode && !props.inlineCropMode && screenPointers.size >= 2) {
+    // Adding a second finger navigates, rather than appending a stray segment to a stroke.
+    discardDrawingPreview();
+    event.preventDefault(); event.stopPropagation(); startNavigation(); return;
   }
   if (props.tool !== 'select') {
     event.preventDefault(); event.stopPropagation();
@@ -536,16 +695,28 @@ function pointerDown(event: PointerEvent) {
     interaction = true;
     const tool = props.tool === 'erase' ? 'eraser' : 'pen';
     const points = [position.x, position.y, position.x + .01, position.y + .01];
-    const line = new Konva.Line({ points, stroke: props.brushColor, strokeWidth: props.brushSize, opacity: tool === 'eraser' ? 1 : props.brushOpacity, lineCap: 'round', lineJoin: 'round', tension: .25, listening: false, globalCompositeOperation: tool === 'eraser' ? 'destination-out' : 'source-over' });
-    root.add(line); drawing = { points, line, tool }; layer?.batchDraw();
+    const line = new Konva.Line({ points, stroke: props.brushColor, strokeWidth: props.brushSize, opacity: tool === 'eraser' ? 1 : props.brushOpacity, lineCap: 'round', lineJoin: 'round', tension: .25, listening: false });
+    if (tool === 'eraser') {
+      const masks = drawingBindings.filter(binding => !binding.element.locked).map(binding => eraseMask(binding, line, new Konva.Transform()));
+      drawing = { points, line, tool, masks };
+      for (const mask of masks) cacheDrawing(mask.binding);
+    } else { root.add(line); drawing = { points, line, tool }; }
+    layer?.batchDraw();
     return;
   }
   const hit = hitSelection();
+  if (!props.cropMode && !props.inlineCropMode) {
+    const target = stage?.getIntersection(stage.getPointerPosition() ?? { x: 0, y: 0 });
+    if (longCanvas.value && props.document.mode === 'grid' && hit?.kind !== 'element' && !target?.getParent()?.getClassName().includes('Transformer')) {
+      navigationCandidate = { pointerId: event.pointerId, start: screenPoint(event) };
+    }
+  }
   if (!props.cropMode && props.inlineDisabled) { clearHold(); return; }
   const selection = props.cropMode ? hit ?? props.selection : hit;
   const source = selectedCrop(selection, !props.cropMode);
   if (!selection || !source) { clearHold(); return; }
   if (props.cropMode || props.inlineCropMode) {
+    navigationCandidate = undefined;
     event.preventDefault(); event.stopPropagation(); startCrop(selection, source, !props.cropMode); return;
   }
   clearHold();
@@ -574,19 +745,37 @@ function sourcePoint(position: Point, source: CropSource): Point {
 }
 
 function pointerMove(event: PointerEvent) {
-  if (!pointers.has(event.pointerId)) return;
+  if (exporting || !pointers.has(event.pointerId)) return;
+  const screen = screenPoint(event);
+  screenPointers.set(event.pointerId, screen);
+  if (!cropGesture && navigationCandidate?.pointerId === event.pointerId &&
+    Math.hypot(screen.x - navigationCandidate.start.x, screen.y - navigationCandidate.start.y) > 7) startNavigation();
+  if (navigationGesture) {
+    event.preventDefault(); event.stopPropagation();
+    const pair = pointerPair(true), gesture = navigationGesture;
+    if (!longCanvas.value && screenPointers.size < 2) return;
+    const scale = Math.max(fitScale.value, Math.min(fitScale.value * 5,
+      gesture.distance && pair.distance ? gesture.scale * pair.distance / gesture.distance : gesture.scale));
+    const ratio = scale / gesture.scale;
+    zoom.value = scale / fitScale.value;
+    setViewport(scale, pair.center.x - (gesture.center.x - gesture.x) * ratio,
+      pair.center.y - (gesture.center.y - gesture.y) * ratio);
+    return;
+  }
   if (hold && hold.pointerId === event.pointerId && Math.hypot(event.clientX - hold.screen.x, event.clientY - hold.screen.y) > 7) clearHold();
   const position = point(event); pointers.set(event.pointerId, position);
   if (drawing) {
     event.preventDefault(); event.stopPropagation();
     const points = drawing.points;
     if (Math.hypot(position.x - points[points.length - 2]!, position.y - points[points.length - 1]!) < .75) return;
-    points.push(position.x, position.y); drawing.line.points(points); layer?.batchDraw();
+    points.push(position.x, position.y); drawing.line.points(points);
+    for (const mask of drawing.masks ?? []) { mask.line.points(points); cacheDrawing(mask.binding); }
+    layer?.batchDraw();
   } else if (cropGesture) {
     event.preventDefault(); event.stopPropagation();
     const gesture = cropGesture, source = gesture.source, pair = pointerPair();
     const crop = { ...gesture.crop };
-    if (pair.distance && gesture.distance) crop.zoom = Math.min(8, Math.max(1, gesture.crop.zoom * pair.distance / gesture.distance));
+    if (pair.distance && gesture.distance) crop.zoom = Math.min(MAX_CROP_ZOOM, Math.max(MIN_CROP_ZOOM, gesture.crop.zoom * pair.distance / gesture.distance));
     const ratio = crop.zoom / gesture.crop.zoom;
     const before = overflow(source, gesture.crop), after = overflow(source, crop);
     const start = sourcePoint(gesture.start, source), current = sourcePoint(pair.center, source);
@@ -608,29 +797,45 @@ function pointerMove(event: PointerEvent) {
 function pointerUp(event: PointerEvent) {
   if (!pointers.has(event.pointerId)) return;
   if (hold?.pointerId === event.pointerId) clearHold();
-  if (!drawing && !cropGesture) { pointers.delete(event.pointerId); return; }
+  if (navigationGesture) {
+    event.preventDefault(); event.stopPropagation();
+    if (event.type === 'pointercancel') { finishInteraction(true); return; }
+    pointers.delete(event.pointerId); screenPointers.delete(event.pointerId); releasePointer(event.pointerId);
+    if (pointers.size) rebaseNavigation();
+    else finishInteraction(false);
+    return;
+  }
+  if (navigationCandidate?.pointerId === event.pointerId) navigationCandidate = undefined;
+  screenPointers.delete(event.pointerId);
+  if (!drawing && !cropGesture) { pointers.delete(event.pointerId); notifyIdle(); return; }
   event.preventDefault(); event.stopPropagation();
   if (event.type === 'pointercancel') { finishInteraction(true); return; }
   pointers.delete(event.pointerId); releasePointer(event.pointerId);
   if (cropGesture && pointers.size) { rebaseCrop(); return; }
   if (drawing) {
-    const finished = drawing; drawing = undefined; finished.line.destroy();
+    const finished = drawing; discardDrawingPreview(true);
     emit('draw', { points: [...finished.points], color: props.brushColor, width: props.brushSize, tool: finished.tool });
   }
   finishInteraction(false);
 }
 
 function cancelGesture() {
-  if (hold || cropGesture || drawing) finishInteraction(true);
-  else { for (const id of pointers.keys()) releasePointer(id); pointers.clear(); }
+  if (hold || cropGesture || drawing || navigationGesture) finishInteraction(true);
+  else {
+    const ids = [...pointers.keys()]; pointers.clear(); screenPointers.clear(); navigationCandidate = undefined;
+    for (const id of ids) releasePointer(id);
+    notifyIdle();
+  }
 }
 
 function lostPointerCapture(event: PointerEvent) {
-  if (pointers.has(event.pointerId) && (cropGesture || drawing)) cancelGesture();
+  const container = stage?.container();
+  if (!container || event.target !== container || container.hasPointerCapture(event.pointerId)) return;
+  if (pointers.has(event.pointerId) && (cropGesture || drawing || navigationGesture)) cancelGesture();
 }
 
 function keyDown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && (hold || cropGesture)) {
+  if (event.key === 'Escape' && (hold || cropGesture || navigationGesture)) {
     event.preventDefault();
     if (cropGesture?.inline) event.stopPropagation();
     cancelGesture();
@@ -638,31 +843,48 @@ function keyDown(event: KeyboardEvent) {
 }
 
 function suppressCompatibility(event: Event) {
-  if (inlineActive.value || (performance.now() < suppressTapUntil && ['click', 'dblclick', 'mouseup', 'touchend'].includes(event.type))) {
+  if (inlineActive.value || navigationGesture || (performance.now() < suppressTapUntil && ['click', 'dblclick', 'mouseup', 'touchend'].includes(event.type))) {
     if (event.cancelable) event.preventDefault();
     event.stopImmediatePropagation();
   }
 }
 
 function wheel(event: WheelEvent) {
-  if (!props.cropMode || !props.selection || props.tool !== 'select') return;
-  const source = selectedCrop(props.selection);
-  if (!source) return;
-  event.preventDefault();
-  emit('crop', { ...props.selection, crop: { ...source.crop, zoom: Math.max(1, Math.min(8, source.crop.zoom * Math.exp(-event.deltaY * .002))) } });
+  if (exporting || props.playing || props.tool !== 'select') return;
+  if ((props.cropMode || props.inlineCropMode) && props.selection) {
+    const source = selectedCrop(props.selection);
+    if (!source) return;
+    event.preventDefault();
+    emit('crop', { ...props.selection, crop: { ...source.crop, zoom: Math.max(MIN_CROP_ZOOM, Math.min(MAX_CROP_ZOOM, source.crop.zoom * Math.exp(-event.deltaY * .002))) } });
+    return;
+  }
+  if (props.cropMode || props.inlineCropMode || inlineActive.value) return;
+  if (event.ctrlKey || event.metaKey) {
+    event.preventDefault();
+    const anchor = screenPoint(event), oldScale = viewport.value.scale;
+    const scale = Math.max(fitScale.value, Math.min(fitScale.value * 5, oldScale * Math.exp(-event.deltaY * .002)));
+    zoom.value = scale / fitScale.value;
+    setViewport(scale, anchor.x - (anchor.x - viewport.value.x) * scale / oldScale,
+      anchor.y - (anchor.y - viewport.value.y) * scale / oldScale);
+  } else if (longCanvas.value || zoom.value > 1) {
+    event.preventDefault();
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.value.height : 1;
+    setViewport(viewport.value.scale, viewport.value.x - event.deltaX * unit, viewport.value.y - event.deltaY * unit);
+  }
 }
 
 async function renderFrameNow(time: number, pixelRatio: number): Promise<HTMLCanvasElement> {
-  if (hold || cropGesture || drawing) { cancelGesture(); await nextTick(); }
+  await waitForIdle();
   await buildPromise;
   if (pendingBuild) { await rebuild(); await buildPromise; }
   if (!stage || !layer || !root) throw new Error('画布尚未准备完成。');
-  await ensureSceneFonts(props.document.elements);
+  const doc = props.document;
+  await ensureSceneFonts(doc.elements);
   await buildPromise;
   await Promise.all([...resources.values()].map(resource => resource.ready));
-  const original = { width: stage.width(), height: stage.height(), scaleX: stage.scaleX(), scaleY: stage.scaleY(), time: previewTime, listening: stage.listening(), sceneRatio: layer.getCanvas().getPixelRatio(), hitRatio: layer.getHitCanvas().getPixelRatio() };
+  const original = { width: stage.width(), height: stage.height(), x: stage.x(), y: stage.y(), scaleX: stage.scaleX(), scaleY: stage.scaleY(), time: previewTime, listening: stage.listening(), sceneRatio: layer.getCanvas().getPixelRatio(), hitRatio: layer.getHitCanvas().getPixelRatio() };
   const originalVideos = videos.map(binding => ({ binding, time: binding.video.currentTime, paused: binding.video.paused }));
-  const ratio = Math.max(1 / Math.min(props.document.width, props.document.height), pixelRatio);
+  const ratio = Math.max(1 / Math.min(doc.width, doc.height), pixelRatio);
   const exportImages: HTMLCanvasElement[] = [];
   exporting = true;
   stage.listening(false);
@@ -673,7 +895,7 @@ async function renderFrameNow(time: number, pixelRatio: number): Promise<HTMLCan
     for (const binding of videos) binding.video.pause();
     await Promise.all(videos.map(binding => seekVideo(binding.video, binding.start + Math.max(0, time) % Math.max(.01, binding.end - binding.start))));
     layer.getCanvas().setPixelRatio(1); layer.getHitCanvas().setPixelRatio(1);
-    stage.size({ width: Math.round(props.document.width * ratio), height: Math.round(props.document.height * ratio) }); stage.scale({ x: ratio, y: ratio });
+    stage.size({ width: Math.round(doc.width * ratio), height: Math.round(doc.height * ratio) }); stage.scale({ x: ratio, y: ratio }).position({ x: 0, y: 0 });
     applyTime(Math.max(0, time), true);
     for (const binding of pictures) {
       const scale = binding.image.getAbsoluteScale();
@@ -685,39 +907,65 @@ async function renderFrameNow(time: number, pixelRatio: number): Promise<HTMLCan
       }
       cachePicture(binding, Math.max(Math.abs(scale.x), Math.abs(scale.y)));
     }
-    if (patternNode) patternNode.cache({ x: 0, y: 0, width: props.document.width, height: props.document.height, pixelRatio: ratio, hitCanvasPixelRatio: ratio });
+    if (patternNode) patternNode.cache({ x: 0, y: 0, width: doc.width, height: doc.height, pixelRatio: ratio, hitCanvasPixelRatio: ratio });
+    for (const binding of drawingBindings) {
+      const scale = binding.group.getAbsoluteScale();
+      cacheDrawing(binding, Math.max(Math.abs(scale.x), Math.abs(scale.y)));
+    }
     gizmos?.hide(); for (const node of placeholderNodes) node.hide();
     layer.draw();
     return stage.toCanvas({ x: 0, y: 0, width: stage.width(), height: stage.height(), pixelRatio: 1 });
   } finally {
-    stage.size({ width: original.width, height: original.height }); stage.scale({ x: original.scaleX, y: original.scaleY });
-    layer.getCanvas().setPixelRatio(original.sceneRatio); layer.getHitCanvas().setPixelRatio(original.hitRatio);
-    for (const binding of pictures) {
-      binding.image.image(binding.source);
-      const scale = binding.image.getAbsoluteScale();
-      cachePicture(binding, Math.min(1280 / Math.max(binding.asset.width, binding.asset.height), Math.max(Math.abs(scale.x), Math.abs(scale.y)) * original.sceneRatio));
-    }
-    for (const image of exportImages) image.width = image.height = 0;
-    if (patternNode) {
-      const ratio = Math.min(1, viewport.value.scale * original.sceneRatio);
-      patternNode.cache({ x: 0, y: 0, width: props.document.width, height: props.document.height, pixelRatio: ratio, hitCanvasPixelRatio: ratio });
-    }
+    // Restore viewport and visibility before cache/media work that may itself fail.
+    stage.size({ width: original.width, height: original.height }); stage.scale({ x: original.scaleX, y: original.scaleY }).position({ x: original.x, y: original.y });
     stage.listening(original.listening);
     for (const node of placeholderNodes) node.show(); gizmos?.show();
     applyTime(original.time, props.playing);
-    await Promise.allSettled(originalVideos.map(async ({ binding, time: savedTime, paused }) => {
-      await seekVideo(binding.video, savedTime); refreshMediaCache(binding.image);
-      if (!paused && props.playing) await binding.video.play();
-    }));
-    await updateAnimated(original.time).catch(error => emit('error', error instanceof Error ? error.message : '动态素材预览恢复失败。'));
-    exporting = false; updateSelection(); layer.draw();
-    if (pendingBuild) scheduleBuild();
-    if (props.playing) { clockStart = performance.now() - previewTime * 1000; raf = requestAnimationFrame(tick); }
+    try {
+      layer.getCanvas().setPixelRatio(original.sceneRatio); layer.getHitCanvas().setPixelRatio(original.hitRatio);
+      for (const binding of pictures) binding.image.image(binding.source);
+      for (const binding of pictures) {
+        const scale = binding.image.getAbsoluteScale();
+        cachePicture(binding, Math.min(1280 / Math.max(binding.asset.width, binding.asset.height), Math.max(Math.abs(scale.x), Math.abs(scale.y)) * original.sceneRatio));
+      }
+      if (patternNode) {
+        const ratio = Math.min(1, viewport.value.scale * original.sceneRatio);
+        patternNode.cache({ x: 0, y: 0, width: doc.width, height: doc.height, pixelRatio: ratio, hitCanvasPixelRatio: ratio });
+      }
+      for (const binding of drawingBindings) cacheDrawing(binding);
+      await Promise.allSettled(originalVideos.map(async ({ binding, time: savedTime, paused }) => {
+        await seekVideo(binding.video, savedTime); refreshMediaCache(binding.image);
+        if (!paused && props.playing) await binding.video.play();
+      }));
+      await updateAnimated(original.time).catch(error => emit('error', error instanceof Error ? error.message : '动态素材预览恢复失败。'));
+    } finally {
+      for (const image of exportImages) image.width = image.height = 0;
+      exporting = false; updateSelection(); layer.draw();
+      resize();
+      if (pendingBuild) scheduleBuild();
+      if (mounted && props.playing) { clockStart = performance.now() - previewTime * 1000; raf = requestAnimationFrame(tick); }
+    }
   }
 }
 
-function renderFrame(time: number, pixelRatio = 1): Promise<HTMLCanvasElement> {
-  const result = exportQueue.then(() => renderFrameNow(time, pixelRatio));
+async function renderDocumentFrame(time: number, pixelRatio: number, document: EditorDocument): Promise<HTMLCanvasElement> {
+  if (!mounted) throw new Error('画布尚未准备完成。');
+  // Reuse an independent renderer: background captures never replace the live stage.
+  const container = documentRenderer ??= window.document.createElement('div');
+  const vnode = createVNode(instance.type, {
+    document, assets: props.assets, inlineDisabled: true,
+    onError: (message: string) => emit('error', message),
+  });
+  vnode.appContext = instance.appContext;
+  renderVNode(vnode, container);
+  await nextTick();
+  const handle = vnode.component?.exposed as EditorCanvasHandle | null | undefined;
+  if (!handle) throw new Error('导出画布尚未准备完成。');
+  return await handle.renderFrame(time, pixelRatio);
+}
+
+function renderFrame(time: number, pixelRatio = 1, document?: EditorDocument): Promise<HTMLCanvasElement> {
+  const result = exportQueue.then(() => document ? renderDocumentFrame(time, pixelRatio, document) : renderFrameNow(time, pixelRatio));
   exportQueue = result.catch(() => {});
   return result;
 }
@@ -731,10 +979,17 @@ async function elementBounds(id: string): Promise<{ width: number; height: numbe
 }
 
 defineExpose<EditorCanvasHandle>({ renderFrame, resetPreview, elementBounds, measureTextHeight });
-watch(() => props.document, () => {
-  if (interaction) { pendingBuild = true; return; }
-  resize(); scheduleBuild();
-}, { deep: true });
+watch(() => props.document.id, () => { cancelGesture(); resize(true); });
+watch(() => [props.document.width, props.document.height], () => { cancelGesture(); resize(); });
+watch(() => JSON.stringify([
+  props.document.id, props.document.mode, props.document.width, props.document.height,
+  props.document.background, props.document.slots, props.document.elements,
+  props.document.padding, props.document.gap, props.document.cornerRadius, props.document.photoFrame,
+  props.document.animation, props.document.duration,
+]), () => {
+  if (interaction || exporting) { pendingBuild = true; return; }
+  scheduleBuild();
+});
 watch(() => props.assets, () => { cancelGesture(); scheduleBuild(); }, { deep: true });
 watch(() => [props.selection?.kind, props.selection?.id], () => {
   const expected = cropGesture?.selection ?? hold?.selection;
@@ -750,7 +1005,7 @@ watch(() => [props.tool, props.cropMode, props.inlineCropMode, props.inlineDisab
 watch(() => JSON.stringify([
   props.document.id, props.document.mode, props.document.layoutId, props.document.width, props.document.height,
   props.document.padding, props.document.gap, props.document.photoFrame,
-  props.document.slots.map(slot => [slot.id, slot.assetId, slot.x, slot.y, slot.width, slot.height, slot.shape]),
+  props.document.slots.map(slot => [slot.id, slot.assetId, slot.x, slot.y, slot.width, slot.height, slot.shape, slot.visible, slot.locked]),
   props.document.elements.filter(element => element.type === 'image').map(element =>
     [element.id, element.assetId, element.x, element.y, element.width, element.height, element.rotation, element.visible, element.locked]),
 ]), cancelGesture);
@@ -772,25 +1027,30 @@ onMounted(async () => {
   mounted = true;
   layer = new Konva.Layer(); stage.add(layer);
   stage.on('click tap', event => { if (event.target === stage && props.tool === 'select' && !suppressTap()) emit('select', null); });
-  const container = stage.container();
-  container.addEventListener('pointerdown', pointerDown, true);
-  window.addEventListener('pointermove', pointerMove, { capture: true, passive: false });
-  window.addEventListener('pointerup', pointerUp, true);
-  window.addEventListener('pointercancel', pointerUp, true);
-  window.addEventListener('blur', cancelGesture);
-  window.addEventListener('keydown', keyDown, true);
-  container.addEventListener('lostpointercapture', lostPointerCapture);
-  for (const type of compatibilityEvents) container.addEventListener(type, suppressCompatibility, { capture: true, passive: false });
-  container.addEventListener('wheel', wheel, { passive: false });
-  resizeObserver = new ResizeObserver(resizeForViewport); resizeObserver.observe(host.value);
-  window.addEventListener('resize', resizeForViewport);
-  resize(); scheduleBuild();
+  if (host.value.isConnected) {
+    const container = stage.container();
+    container.addEventListener('pointerdown', pointerDown, true);
+    window.addEventListener('pointermove', pointerMove, { capture: true, passive: false });
+    window.addEventListener('pointerup', pointerUp, true);
+    window.addEventListener('pointercancel', pointerUp, true);
+    window.addEventListener('blur', cancelGesture);
+    window.addEventListener('keydown', keyDown, true);
+    container.addEventListener('lostpointercapture', lostPointerCapture);
+    for (const type of compatibilityEvents) container.addEventListener(type, suppressCompatibility, { capture: true, passive: false });
+    container.addEventListener('wheel', wheel, { passive: false });
+    resizeObserver = new ResizeObserver(resizeForViewport); resizeObserver.observe(host.value);
+    window.addEventListener('resize', resizeForViewport);
+  }
+  resize(true); scheduleBuild();
   if (props.playing) raf = requestAnimationFrame(tick);
 });
 
 onBeforeUnmount(() => {
   cancelGesture();
   mounted = false; ++buildGeneration; cancelAnimationFrame(raf); resizeObserver?.disconnect(); window.removeEventListener('resize', resizeForViewport);
+  for (const resolve of idleWaiters) resolve();
+  idleWaiters.clear();
+  if (documentRenderer) { renderVNode(null, documentRenderer); documentRenderer = undefined; }
   const container = stage?.container();
   container?.removeEventListener('pointerdown', pointerDown, true);
   window.removeEventListener('pointermove', pointerMove, true);
@@ -808,7 +1068,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="host" class="editor-canvas-host" :class="{ 'is-drawing': tool !== 'select', 'is-cropping': cropMode || inlineCropMode || inlineActive, 'is-inline-active': inlineActive }">
-    <div class="editor-canvas-paper" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }">
+    <div class="editor-canvas-paper" :data-canvas-zoom="zoom" :data-canvas-offset-x="viewport.x" :data-canvas-offset-y="viewport.y" :data-long-canvas="longCanvas" :style="{ width: `${viewport.width}px`, height: `${viewport.height}px` }">
       <v-stage ref="stageRef" :config="stageConfig" />
       <slot />
       <div v-if="!cropMode && !inlineDisabled && (inlineActive || inlineCropMode)" class="inline-crop-hint" role="status" aria-live="polite">
@@ -819,7 +1079,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.editor-canvas-host { width: 100%; display: flex; justify-content: center; align-items: center; padding: 0; min-height: 180px; touch-action: none; user-select: none; }
+.editor-canvas-host { position: relative; width: 100%; display: flex; justify-content: center; align-items: center; padding: 0; min-height: 180px; touch-action: none; user-select: none; }
 .editor-canvas-paper { position: relative; flex: none; overflow: hidden; background: #fff; box-shadow: var(--shadow-float); }
 .is-drawing { cursor: crosshair; }
 .is-cropping { cursor: grab; }

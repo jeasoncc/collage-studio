@@ -113,7 +113,7 @@ export function collageLookDocument(document: EditorDocument, look: CollageLook,
     const photos = filled.map(slot => {
       const asset = assets[slot.assetId!];
       if (!asset || (asset.kind !== 'image' && asset.kind !== 'video')) {
-        throw new Error('长拼照片素材缺失或不可用，请重新导入后再选择风格。');
+        throw new Error('照片素材缺失或不可用，请重新导入后再选择风格。');
       }
       return asset;
     });
