@@ -44,7 +44,7 @@ const countHint = computed(() => {
   if (props.items.length < minimum.value) return `还需添加 ${minimum.value - props.items.length} 张照片`;
   return `已选 ${props.items.length} 张 · 最多 ${props.maxPhotos} 张`;
 });
-const importProgress = computed(() => new Map(props.imports.flatMap(item => item.assetId ? [[item.assetId, item] as const] : [])));
+const importProgress = computed(() => new Map(props.imports.flatMap(item => item.assetId && item.stage !== 'complete' ? [[item.assetId, item] as const] : [])));
 const pendingImports = computed(() => props.imports.filter(item => !item.assetId));
 const announcement = ref('');
 const selecting = ref(false);

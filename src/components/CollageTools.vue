@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { Check, Crop, Plus, Sparkles } from 'lucide-vue-next';
+import { Check, Crop, Plus } from 'lucide-vue-next';
 import { recommendLayout } from '../catalog/layouts';
 import { slotRect } from '../defaults';
 import type { BackgroundSpec, CollageSlot, EditorDocument, FilterState, ImageElement, MediaAsset, Selection } from '../types';
@@ -13,8 +13,8 @@ import PhotoFramePreview from './PhotoFramePreview.vue';
 import { filterPresets } from '../catalog/photoStyles';
 import ColorPicker from './ColorPicker.vue';
 
-const props = defineProps<{ panel: PanelName; document: EditorDocument; assets: Record<string, MediaAsset>; selection: Selection }>();
-const emit = defineEmits<{ action: [action: PanelAction]; managePhotos: []; crop: [target: Exclude<Selection, null>]; browse: [panel: 'layouts' | 'looks'] }>();
+const props = withDefaults(defineProps<{ panel: PanelName; document: EditorDocument; assets: Record<string, MediaAsset>; selection: Selection; expanded?: boolean; collapsible?: boolean }>(), { expanded: false, collapsible: false });
+const emit = defineEmits<{ action: [action: PanelAction]; managePhotos: []; crop: [target: Exclude<Selection, null>]; browse: [panel: 'layouts' | 'looks']; compact: [] }>();
 const lookTab = ref<'style' | 'tone'>('style');
 const lookTabs = [{ id: 'style', label: '风格' }, { id: 'tone', label: '滤镜' }] as const;
 const layoutTab = ref<'composition' | 'poster'>('composition');
@@ -83,12 +83,9 @@ function choosePhoto(frame: typeof frames.value[number]) {
 </script>
 
 <template>
-  <section class="collage-tools" :aria-label="panel === 'background' ? '画布设置' : '拼图工具'">
+  <section class="collage-tools" :class="{ 'compact-gallery-tools': !expanded && (panel === 'layouts' || panel === 'looks') }" :aria-label="panel === 'background' ? '画布设置' : '拼图工具'">
     <template v-if="panel === 'photos'">
-      <div class="tool-row photo-toolbar">
-        <span class="tool-note">{{ placedPhotos.length }} 张照片 · 点选照片，长按画布微调</span>
-        <button type="button" class="tool-button manager-button" @click="emit('managePhotos')"><Plus :size="17" aria-hidden="true" />整理与添加照片</button>
-      </div>
+      <p class="inline-note">{{ placedPhotos.length }} 张照片 · 点选照片，长按画布微调</p>
       <div class="photo-strip horizontal-strip" aria-label="已放入拼图的照片">
         <button
           v-for="(frame, index) in frames" :key="frame.id" type="button" class="photo-card"
@@ -108,33 +105,30 @@ function choosePhoto(frame: typeof frames.value[number]) {
           </span>
           <span class="photo-caption">{{ frame.locked ? '已锁定' : frame.asset ? selection?.id === frame.id ? '已选中' : '选择' : '添加照片' }}</span>
         </button>
-        <button type="button" class="photo-card add-card" @click="emit('managePhotos')"><span class="photo-well"><Plus :size="24" aria-hidden="true" /></span><span class="photo-caption">添加照片</span></button>
+        <button type="button" class="photo-card add-card" @click="emit('managePhotos')"><span class="photo-well"><Plus :size="24" aria-hidden="true" /></span><span class="photo-caption">添加与整理</span></button>
       </div>
       <button v-if="selectedFrame?.asset && !selectedFrame.locked" type="button" class="tool-button photo-refine-button" @click="emit('crop', selectedFrame.target)"><Crop :size="16" aria-hidden="true" /><span>全屏精修所选照片</span></button>
     </template>
 
     <template v-else-if="panel === 'layouts'">
-      <div class="layout-tabs" aria-label="布局类型">
-        <button type="button" :aria-pressed="layoutTab === 'composition'" @click="layoutTab = 'composition'">构图</button>
-        <button type="button" :aria-pressed="layoutTab === 'poster'" @click="layoutTab = 'poster'">照片海报</button>
-      </div>
-      <template v-if="layoutTab === 'composition'">
-        <div class="tool-row layout-toolbar">
-          <button type="button" class="tool-button recommend-button" :disabled="!recommendation" @click="recommendation && emit('action', { type: 'layout', layout: recommendation })"><Sparkles :size="16" aria-hidden="true" /><span>推荐布局</span></button>
-          <button type="button" class="tool-button" aria-haspopup="dialog" @click="emit('browse', 'layouts')">全部版式</button>
+      <div class="gallery-header">
+        <div class="layout-tabs" aria-label="布局类型">
+          <button type="button" :aria-pressed="layoutTab === 'composition'" @click="layoutTab = 'composition'">构图</button>
+          <button type="button" :aria-pressed="layoutTab === 'poster'" @click="layoutTab = 'poster'">照片海报</button>
         </div>
-        <LayoutGallery compact :document="document" :assets="assets" :count="placedPhotos.length" :selected-id="document.mode === 'grid' ? document.layoutId : undefined" :preview-images="previewImages" :preview-photos="previewPhotos" :aspect-ratio="document.width / document.height" @select="layout => emit('action', { type: 'layout', layout })" />
-      </template>
-      <PosterGallery v-else :document="document" :assets="assets" @select="template => emit('action', { type: 'poster', template })" />
+        <button v-if="!expanded || collapsible" type="button" class="browse-gallery" :aria-expanded="expanded" @click="expanded ? emit('compact') : emit('browse', 'layouts')">{{ expanded ? '收起列表' : layoutTab === 'composition' ? '全部版式' : '全部海报' }}</button>
+      </div>
+      <LayoutGallery v-if="layoutTab === 'composition'" :compact="!expanded" embedded :recommended-id="recommendation?.id" :document="document" :assets="assets" :count="placedPhotos.length" :selected-id="document.mode === 'grid' ? document.layoutId : undefined" :preview-images="previewImages" :preview-photos="previewPhotos" :aspect-ratio="document.width / document.height" @select="layout => emit('action', { type: 'layout', layout })" />
+      <PosterGallery v-else :compact="!expanded" embedded :document="document" :assets="assets" @select="template => emit('action', { type: 'poster', template })" />
     </template>
 
     <template v-else-if="panel === 'looks'">
       <div class="look-tabs" aria-label="风格工具">
         <button v-for="tab in lookTabs" :key="tab.id" type="button" :aria-pressed="lookTab === tab.id" @click="lookTab = tab.id">{{ tab.label }}</button>
-        <button type="button" class="browse-looks" aria-haspopup="dialog" @click="emit('browse', 'looks')">全部风格</button>
+        <button v-if="!expanded || (collapsible && lookTab === 'style')" type="button" class="browse-looks" :aria-expanded="expanded" @click="lookTab = 'style'; expanded ? emit('compact') : emit('browse', 'looks')">{{ expanded ? '收起列表' : '全部风格' }}</button>
       </div>
       <template v-if="lookTab === 'style'">
-        <CollageStyleGallery compact :document="document" :assets="assets" @select="look => emit('action', { type: 'look', look })" />
+        <CollageStyleGallery class="embedded-style-gallery" :compact="!expanded" :document="document" :assets="assets" @select="look => emit('action', { type: 'look', look })" />
       </template>
       <template v-else-if="lookTab === 'tone'">
         <div class="tone-strip horizontal-strip" aria-label="应用到全部照片的滤镜">
@@ -166,23 +160,25 @@ function choosePhoto(frame: typeof frames.value[number]) {
 
 <style scoped>
 .collage-tools { width: 100%; min-width: 0; min-height: 190px; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px; color: var(--ink); font-size: 13px; padding: 2px 2px 6px; }
+.compact-gallery-tools { min-height: 0; gap: 6px; padding: 0 2px 2px; }
+.gallery-header { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 44px; flex-shrink: 0; }
+.gallery-header .layout-tabs { flex: 1; min-width: 0; }
+.browse-gallery { flex: none; min-width: 44px; min-height: 44px; padding: 0 10px; border: 0; border-radius: 12px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+.embedded-style-gallery :deep(.style-heading) { display: none; }
+.compact-gallery-tools .look-tabs { padding: 0; min-height: 44px; }
 .collage-tools button { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; transition: background .18s var(--ease-out), transform .18s var(--ease-out), box-shadow .18s var(--ease-out); }
 .collage-tools button:active:not(:disabled) { transform: scale(.97); }
 .collage-tools button:disabled { opacity: .45; cursor: not-allowed; }
 .collage-tools button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.tool-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; flex-shrink: 0; }
-.layout-toolbar { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); }
 .tool-note, .inline-note { color: var(--muted); font-size: 12px; line-height: 18px; }
 .inline-note { margin: 0; flex-shrink: 0; }
 .tool-button { min-width: 0; min-height: 44px; display: inline-flex; flex-direction: row; align-items: center; justify-content: center; gap: 7px; line-height: 1.5; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--control); color: var(--ink); white-space: normal; }
-.tool-button svg, .layout-tabs svg { display: block; flex: 0 0 auto; }
-.recommend-button { margin-left: 0; }
-.layout-tabs { display: flex; gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 14px; background: var(--control); flex-shrink: 0; }
-.layout-tabs button { display: inline-flex; flex-direction: row; align-items: center; justify-content: center; gap: 6px; flex: 1; min-width: 0; min-height: 44px; padding: 8px 6px; border: 0; border-radius: 10px; background: transparent; white-space: normal; }
+.tool-button svg { display: block; flex: 0 0 auto; }
+.layout-tabs { display: flex; gap: 3px; padding: 0 3px; border: 0; border-radius: 14px; background: var(--control); flex-shrink: 0; }
+.layout-tabs button { display: inline-flex; flex-direction: row; align-items: center; justify-content: center; gap: 6px; flex: 1; min-width: 44px; min-height: 44px; padding: 8px 6px; border: 0; border-radius: 10px; background: transparent; color: inherit; white-space: nowrap; }
 .layout-tabs button[aria-pressed="true"] { color: var(--accent); background: var(--surface); font-weight: 600; box-shadow: 0 1px 4px #2033290c; }
 .photo-refine-button { width: 100%; }
 .tool-button:hover { background: var(--control-hover); }
-.manager-button { flex-shrink: 0; background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .horizontal-strip { display: flex; align-items: stretch; gap: 10px; overflow-x: auto; max-width: 100%; min-height: 0; flex-shrink: 0; padding: 3px 2px 7px; scroll-padding-inline: 4px; overscroll-behavior-x: contain; scroll-snap-type: x proximity; }
 .photo-card, .tone-card { flex: 0 0 100px; display: flex; flex-direction: column; gap: 5px; min-height: 112px; padding: 6px; border: 0; border-radius: 17px; background: var(--surface); color: inherit; box-shadow: var(--shadow-card); scroll-snap-align: start; }
 .photo-card:hover, .tone-card:hover { background: var(--control-hover); }
@@ -202,7 +198,6 @@ function choosePhoto(frame: typeof frames.value[number]) {
 .ratio-button strong { font-size: 13px; font-weight: 600; }
 .ratio-button span { font-size: 11px; color: var(--muted); }
 .ratio-button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
-@media (max-width: 480px) { .photo-toolbar { flex-direction: column; align-items: stretch; gap: 8px; } .photo-toolbar .manager-button { width: 100%; } }
-@media (max-width: 360px) { .layout-tabs button { gap: 4px; padding-inline: 4px; font-size: 12px; } .layout-tabs svg { width: 14px; height: 14px; } }
+@media (max-width: 360px) { .layout-tabs button { gap: 4px; padding-inline: 4px; font-size: 12px; } .browse-gallery { padding-inline: 7px; font-size: 12px; } }
 @media (prefers-reduced-motion: reduce) { .collage-tools button { transition: none; } .collage-tools button:active { transform: none; } }
 </style>

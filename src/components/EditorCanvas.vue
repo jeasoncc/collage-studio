@@ -46,9 +46,17 @@ let gizmos: Konva.Group | undefined;
 let transformer: Konva.Transformer | undefined;
 let selectionOutline: Konva.Rect | undefined;
 let patternNode: Konva.Group | undefined;
+let patternCacheRatio = 0;
 let resizeObserver: ResizeObserver | undefined;
 let buildGeneration = 0;
 let buildPromise: Promise<void> = Promise.resolve();
+let buildError: Error | undefined;
+let buildRevision = 0;
+let buildFrame = 0;
+let buildRunning = false;
+let resolveBuild: (() => void) | undefined;
+let cacheFrame = 0;
+let disposed = false;
 let mounted = false;
 let exporting = false;
 let interaction = false;
@@ -62,14 +70,14 @@ let liveFramePromise: Promise<void> = Promise.resolve();
 const resources = new Map<string, CanvasMedia>();
 const elementNodes = new Map<string, Konva.Group>();
 let placeholderNodes: Konva.Node[] = [];
-interface DrawingBinding { element: DrawingElement; group: Konva.Group; line: Konva.Line; maskCount: number; dirty?: boolean; bounds?: ReturnType<Konva.Line['getClientRect']> }
+interface DrawingBinding { element: DrawingElement; group: Konva.Group; line: Konva.Line; maskCount: number; dirty?: boolean; cacheRatio?: number; bounds?: ReturnType<Konva.Line['getClientRect']> }
 interface EraseMask { binding: DrawingBinding; group: Konva.Group; line: Konva.Line; transform: Konva.Transform; matrix: number[] }
 const drawingBindings: DrawingBinding[] = [];
 const eraserBindings: Array<{ node: Konva.Group; masks: EraseMask[] }> = [];
 interface VideoBinding { video: HTMLVideoElement; image: Konva.Image; start: number; end: number; muted: boolean; playBlocked?: boolean; playPending?: boolean }
 let videos: VideoBinding[] = [];
 const animatedAssets = new Map<string, MediaAsset>();
-interface PictureBinding { asset: MediaAsset; image: Konva.Image; source: CanvasMedia['source']; blur: number }
+interface PictureBinding { asset: MediaAsset; image: Konva.Image; source: CanvasMedia['source']; blur: number; cacheRatio?: number }
 let pictures: PictureBinding[] = [];
 let animatedBindings: { assetId: string; image: Konva.Image }[] = [];
 const pointers = new Map<number, { x: number; y: number }>();
@@ -89,12 +97,14 @@ let cropGesture: {
 } | undefined;
 let hold: { pointerId: number; selection: NonNullable<Selection>; screen: Point; timer: ReturnType<typeof setTimeout> } | undefined;
 const inlineActive = ref(false);
+const cropActive = computed(() => props.cropMode || props.inlineCropMode || inlineActive.value);
 let suppressTapUntil = 0;
 const compatibilityEvents = ['mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend', 'click', 'dblclick'] as const;
 let drawing: { points: number[]; line: Konva.Line; tool: DrawingChange['tool']; masks?: EraseMask[] } | undefined;
 
 function notifyIdle() {
   if (interaction || pointers.size) return;
+  queueBuild();
   for (const resolve of idleWaiters) resolve();
   idleWaiters.clear();
 }
@@ -114,6 +124,7 @@ function setViewport(scale: number, x: number, y: number) {
     x: clampOffset(x, viewport.value.width, doc.width * scale),
     y: clampOffset(y, viewport.value.height, doc.height * scale) };
   stage?.scale({ x: scale, y: scale }).position({ x: viewport.value.x, y: viewport.value.y });
+  schedulePreviewCacheRefresh();
   updateSelection();
   layer?.batchDraw();
 }
@@ -138,9 +149,7 @@ function resize(reset = false) {
 
 
 function resizeForViewport() {
-  const previousScale = viewport.value.scale;
   resize();
-  if (viewport.value.scale !== previousScale) scheduleBuild();
 }
 
 function acquire(key: string, assetId: string, active: Set<string>) {
@@ -152,7 +161,7 @@ function acquire(key: string, assetId: string, active: Set<string>) {
     media?.dispose();
     media = loadCanvasMedia(asset);
     // All decode failures are surfaced; renderFrame also rejects instead of exporting a missing photo.
-    void media.ready.catch(error => emit('error', error instanceof Error ? error.message : '素材读取失败。'));
+    void media.ready.catch(error => { if (mounted) emit('error', error instanceof Error ? error.message : '素材读取失败。'); });
     resources.set(key, media);
   }
   return media;
@@ -165,6 +174,44 @@ function cachePicture(binding: PictureBinding, pixelRatio: number) {
   image.clearCache();
   image.blurRadius(binding.blur * ratio);
   image.cache({ x: 0, y: 0, width: image.width(), height: image.height(), pixelRatio: ratio, hitCanvasPixelRatio: ratio });
+  binding.cacheRatio = ratio;
+}
+
+// Keep higher-resolution preview caches when shrinking. A little headroom avoids
+// reallocating filtered photos and erased drawings on every panel-drag pixel.
+function refreshPreviewCaches() {
+  if (!mounted || exporting || !root) return;
+  const pixelRatio = layer?.getCanvas().getPixelRatio() ?? 1;
+  for (const binding of pictures) {
+    if (!binding.image.filters()?.length) continue;
+    const scale = binding.image.getAbsoluteScale();
+    const cap = Math.min(1, 1280 / Math.max(binding.asset.width, binding.asset.height));
+    const needed = Math.min(cap, Math.max(Math.abs(scale.x), Math.abs(scale.y)) * pixelRatio);
+    if ((binding.cacheRatio ?? 0) < needed) cachePicture(binding, Math.min(cap, needed * 1.25));
+  }
+  if (patternNode) {
+    const needed = Math.min(1, viewport.value.scale * pixelRatio);
+    if (patternCacheRatio < needed) {
+      patternCacheRatio = Math.min(1, needed * 1.25);
+      patternNode.clearCache();
+      patternNode.cache({ x: 0, y: 0, width: root.clipWidth(), height: root.clipHeight(), pixelRatio: patternCacheRatio, hitCanvasPixelRatio: patternCacheRatio });
+    }
+  }
+  for (const binding of drawingBindings) {
+    if (!binding.maskCount) continue;
+    const scale = binding.group.getAbsoluteScale();
+    const needed = Math.max(.01, Math.min(1, Math.max(Math.abs(scale.x), Math.abs(scale.y)) * pixelRatio));
+    if ((binding.cacheRatio ?? 0) < needed) cacheDrawing(binding, Math.min(1, needed * 1.25));
+  }
+  layer?.batchDraw();
+}
+
+function schedulePreviewCacheRefresh() {
+  if (!mounted || cacheFrame) return;
+  cacheFrame = requestAnimationFrame(() => {
+    cacheFrame = 0;
+    refreshPreviewCaches();
+  });
 }
 
 function addPicture(parent: Konva.Group, key: string, assetId: string, width: number, height: number, crop: CropState, filter: FilterState, options?: Partial<ImageElement>) {
@@ -259,6 +306,7 @@ function addBackground() {
   patternNode = group;
   const ratio = Math.min(1, viewport.value.scale * (layer?.getCanvas().getPixelRatio() ?? 1));
   group.cache({ x: 0, y: 0, width: doc.width, height: doc.height, pixelRatio: ratio, hitCanvasPixelRatio: ratio });
+  patternCacheRatio = ratio;
 }
 
 // Selection follows the displayed frame, not bitmap overflow or text shadows.
@@ -272,7 +320,7 @@ function addElement(element: SceneElement) {
     id: element.id, x: element.x + element.width / 2, y: element.y + element.height / 2,
     offsetX: element.width / 2, offsetY: element.height / 2, width: element.width, height: element.height,
     rotation: element.rotation, opacity: element.opacity,
-    draggable: !element.locked && props.tool === 'select' && !(element.type === 'image' && (props.cropMode || props.inlineCropMode || inlineActive.value)),
+    draggable: !element.locked && props.tool === 'select' && !cropActive.value,
     // Keep native drag outside the long-press screen-space tolerance.
     dragDistance: element.type === 'image' ? 8 : Konva.dragDistance,
   });
@@ -310,9 +358,9 @@ function addElement(element: SceneElement) {
   }
   group.on('click tap', event => { event.cancelBubble = true; if (props.tool === 'select' && !suppressTap()) emit('select', { kind: 'element', id: element.id }); });
   group.on('dblclick dbltap', event => { event.cancelBubble = true; if (!suppressTap() && element.type === 'text' && !element.locked) emit('editText', element.id); });
-  group.on('dragstart transformstart', () => { if (navigationGesture) return; interaction = true; emit('select', { kind: 'element', id: element.id }); });
+  group.on('dragstart transformstart', () => { if (navigationGesture || cropActive.value) return; interaction = true; emit('select', { kind: 'element', id: element.id }); });
   group.on('dragend transformend', () => {
-    if (navigationGesture) return;
+    if (navigationGesture || cropActive.value) return;
     const width = Math.max(8, group.width() * Math.abs(group.scaleX()));
     const height = Math.max(8, group.height() * Math.abs(group.scaleY()));
     let patch: Partial<SceneElement> = { x: group.x() - width / 2, y: group.y() - height / 2, width, height, rotation: group.rotation() };
@@ -325,7 +373,6 @@ function addElement(element: SceneElement) {
     interaction = false;
     emit('transform', { id: element.id, patch });
     notifyIdle();
-    void nextTick().then(scheduleBuild);
   });
   if (element.type === 'drawing') group.on('dragmove transform', () => { refreshEraseMasks(); layer?.batchDraw(); });
   root.add(group);
@@ -335,14 +382,15 @@ function cacheDrawing(binding: DrawingBinding, pixelRatio?: number) {
   const group = binding.group;
   binding.dirty = false;
   group.clearCache();
-  if (!binding.maskCount) return;
+  if (!binding.maskCount) { binding.cacheRatio = undefined; return; }
   const scale = group.getAbsoluteScale();
   const ratio = pixelRatio ?? Math.max(.01, Math.min(1, Math.max(Math.abs(scale.x), Math.abs(scale.y)) * (layer?.getCanvas().getPixelRatio() ?? 1)));
   const bounds = binding.bounds ??= binding.line.getClientRect({ skipTransform: true });
   const width = Math.max(1, bounds.width), height = Math.max(1, bounds.height);
   // Stroke edits can extend beyond the creation-time element frame.
   // Tiny previews must still allocate at least one backing pixel on each axis.
-  group.cache({ ...bounds, width, height, pixelRatio: Math.max(ratio, 1 / Math.min(width, height)), hitCanvasPixelRatio: 1 });
+  binding.cacheRatio = Math.max(ratio, 1 / Math.min(width, height));
+  group.cache({ ...bounds, width, height, pixelRatio: binding.cacheRatio, hitCanvasPixelRatio: 1 });
 }
 function eraseMask(binding: DrawingBinding, source: Konva.Line, transform: Konva.Transform, opacity = 1): EraseMask {
   const local = binding.group.getTransform().copy().invert().multiply(transform);
@@ -391,9 +439,8 @@ function discardDrawingPreview(keepMasks = false) {
   layer?.batchDraw();
 }
 
-async function rebuild() {
+async function rebuild(revision: number) {
   if (!stage || !layer || interaction || exporting) { pendingBuild = true; return; }
-  pendingBuild = false;
   const generation = ++buildGeneration;
   const active = new Set<string>();
   const doc = props.document;
@@ -402,11 +449,12 @@ async function rebuild() {
   for (const element of doc.elements) if (element.type === 'image' && element.visible) acquire(`element:${element.id}`, element.assetId, active);
   await Promise.allSettled([...active].map(key => resources.get(key)!.ready));
   await ensureSceneFonts(doc.elements);
-  if (!mounted || generation !== buildGeneration || interaction || exporting) { pendingBuild = true; return; }
+  if (!mounted || generation !== buildGeneration) return;
+  if (revision !== buildRevision || interaction || exporting) { pendingBuild = true; return; }
   for (const [key, resource] of resources) if (!active.has(key)) { resource.dispose(); resources.delete(key); }
   transformer?.nodes([]);
   root?.destroy(); gizmos?.destroy();
-  videos.length = 0; animatedAssets.clear(); animatedBindings.length = 0; pictures.length = 0; patternNode = undefined; elementNodes.clear(); placeholderNodes.length = 0;
+  videos.length = 0; animatedAssets.clear(); animatedBindings.length = 0; pictures.length = 0; patternNode = undefined; patternCacheRatio = 0; elementNodes.clear(); placeholderNodes.length = 0;
   drawingBindings.length = 0; eraserBindings.length = 0;
   root = new Konva.Group({ clipX: 0, clipY: 0, clipWidth: doc.width, clipHeight: doc.height });
   layer.add(root);
@@ -435,21 +483,73 @@ async function rebuild() {
   transformer = new Konva.Transformer({ rotateEnabled: true, flipEnabled: false, anchorSize: 11, anchorCornerRadius: 6,
     anchorStyleFunc: anchor => { anchor.hitStrokeWidth(34); },
     borderStroke: '#486252', anchorStroke: '#486252', anchorFill: '#fff', padding: 3, ignoreStroke: true,
-    boundBoxFunc: (oldBox, newBox) => Math.abs(newBox.width) < 12 || Math.abs(newBox.height) < 12 ? oldBox : newBox });
+    boundBoxFunc: (oldBox, newBox) => cropActive.value || Math.abs(newBox.width) < 12 || Math.abs(newBox.height) < 12 ? oldBox : newBox });
   gizmos.add(selectionOutline, transformer);
   await Promise.all(videos.map(binding => seekVideo(binding.video, binding.start + previewTime % Math.max(.01, binding.end - binding.start))));
+  if (!mounted || generation !== buildGeneration || revision !== buildRevision) return;
   await updateAnimated(previewTime);
-  if (!mounted || generation !== buildGeneration) return;
+  if (!mounted || generation !== buildGeneration || revision !== buildRevision) return;
   for (const binding of videos) refreshMediaCache(binding.image);
   applyTime(previewTime, props.playing);
   updateSelection();
   layer.draw();
+  schedulePreviewCacheRefresh();
+}
+
+function queueBuild() {
+  if (!mounted || !pendingBuild || buildFrame || buildRunning || interaction || exporting) return;
+  buildFrame = requestAnimationFrame(() => {
+    buildFrame = 0;
+    void drainBuilds();
+  });
+}
+
+async function drainBuilds() {
+  if (buildRunning) return;
+  buildRunning = true;
+  try {
+    while (mounted && pendingBuild && !interaction && !exporting) {
+      pendingBuild = false;
+      buildError = undefined;
+      try { await rebuild(buildRevision); }
+      catch (error) {
+        buildError = error instanceof Error ? error : new Error('画布渲染失败。');
+        if (mounted) emit('error', buildError.message);
+      }
+    }
+  } finally {
+    buildRunning = false;
+    if (!pendingBuild || !mounted) {
+      resolveBuild?.();
+      resolveBuild = undefined;
+    } else queueBuild();
+  }
 }
 
 function scheduleBuild() {
   if (!mounted) return;
-  if (exporting) { pendingBuild = true; return; }
-  buildPromise = rebuild().catch(error => emit('error', error instanceof Error ? error.message : '画布渲染失败。'));
+  ++buildRevision;
+  pendingBuild = true;
+  if (!resolveBuild) buildPromise = new Promise<void>(resolve => { resolveBuild = resolve; });
+  queueBuild();
+}
+
+async function flushBuilds() {
+  // Include prop watchers from the same store transaction before awaiting work.
+  await nextTick();
+  while (mounted) {
+    await waitForIdle();
+    if (pendingBuild && !buildRunning && !exporting) {
+      cancelAnimationFrame(buildFrame); buildFrame = 0;
+      void drainBuilds();
+    }
+    await buildPromise;
+    await nextTick();
+    if (!pendingBuild && !buildRunning) {
+      if (buildError) throw buildError;
+      return;
+    }
+  }
 }
 
 function updateSelection() {
@@ -463,8 +563,8 @@ function updateSelection() {
   } else {
     const element = props.document.elements.find(item => item.id === selection?.id);
     const node = element && elementNodes.get(element.id);
-    if (node && !element.locked) {
-      if (element.type === 'image' && (props.cropMode || props.inlineCropMode || inlineActive.value)) {
+    if (node && !element.locked && (!cropActive.value || element.type === 'image')) {
+      if (cropActive.value) {
         const rect = node.getClientRect({ relativeTo: root });
         selectionOutline.setAttrs({ ...rect, visible: true, strokeWidth: 2 / viewport.value.scale, dash: [] });
       } else {
@@ -513,6 +613,7 @@ function advanceVideos(time: number) {
 async function updateAnimated(time: number) {
   for (const [assetId, asset] of animatedAssets) {
     const frame = await getAnimatedFrame(asset, time);
+    if (!mounted) return;
     for (const binding of animatedBindings) if (binding.assetId === assetId) {
       binding.image.image(frame);
       refreshMediaCache(binding.image);
@@ -588,7 +689,7 @@ function hitSelection(): Selection {
   return null;
 }
 
-function suppressTap() { return inlineActive.value || performance.now() < suppressTapUntil; }
+function suppressTap() { return cropActive.value || performance.now() < suppressTapUntil; }
 
 function clearHold() {
   if (hold) clearTimeout(hold.timer);
@@ -642,8 +743,13 @@ function rebaseCrop() {
 }
 
 function syncDraggable() {
-  for (const element of props.document.elements) elementNodes.get(element.id)?.draggable(!navigationGesture && !element.locked && props.tool === 'select' &&
-    !(element.type === 'image' && (props.cropMode || props.inlineCropMode || inlineActive.value)));
+  if (cropActive.value && !cropGesture) {
+    transformer?.stopTransform();
+    for (const node of elementNodes.values()) if (node.isDragging()) node.stopDrag();
+    interaction = false; applyTime(previewTime, false);
+  }
+  for (const element of props.document.elements) elementNodes.get(element.id)?.draggable(!navigationGesture && !element.locked && props.tool === 'select' && !cropActive.value);
+  notifyIdle();
 }
 
 function startCrop(selection: NonNullable<Selection>, source: CropSource, inline: boolean) {
@@ -670,7 +776,6 @@ function finishInteraction(cancelled: boolean) {
   if (gesture?.inline) emit('inlineEnd', { cancelled });
   syncDraggable(); updateSelection();
   notifyIdle();
-  void nextTick().then(() => { if (pendingBuild) scheduleBuild(); });
 }
 
 function pointerDown(event: PointerEvent) {
@@ -678,11 +783,23 @@ function pointerDown(event: PointerEvent) {
   // A fresh intentional gesture must not inherit the previous hold's synthetic-tap guard.
   if (!pointers.size) suppressTapUntil = 0;
   const position = point(event);
+  if (cropActive.value) {
+    event.preventDefault(); event.stopPropagation(); clearHold();
+    const selection = cropGesture?.selection ?? props.selection;
+    const hit = hitSelection();
+    if (props.tool !== 'select' || (!props.cropMode && props.inlineDisabled) || !selection ||
+      (hit ? hit.kind !== selection.kind || hit.id !== selection.id : !props.cropMode)) return;
+    const source = cropGesture?.source ?? selectedCrop(selection, !props.cropMode);
+    if (!source) return;
+    pointers.set(event.pointerId, position);
+    screenPointers.set(event.pointerId, screenPoint(event));
+    navigationCandidate = undefined;
+    if (cropGesture) { capturePointers(); rebaseCrop(); }
+    else startCrop(selection, source, !props.cropMode);
+    return;
+  }
   pointers.set(event.pointerId, position);
   screenPointers.set(event.pointerId, screenPoint(event));
-  if (cropGesture) {
-    event.preventDefault(); event.stopPropagation(); capturePointers(); rebaseCrop(); return;
-  }
   if (!props.cropMode && !props.inlineCropMode && screenPointers.size >= 2) {
     // Adding a second finger navigates, rather than appending a stray segment to a stroke.
     discardDrawingPreview();
@@ -712,13 +829,9 @@ function pointerDown(event: PointerEvent) {
     }
   }
   if (!props.cropMode && props.inlineDisabled) { clearHold(); return; }
-  const selection = props.cropMode ? hit ?? props.selection : hit;
-  const source = selectedCrop(selection, !props.cropMode);
+  const selection = hit;
+  const source = selectedCrop(selection, true);
   if (!selection || !source) { clearHold(); return; }
-  if (props.cropMode || props.inlineCropMode) {
-    navigationCandidate = undefined;
-    event.preventDefault(); event.stopPropagation(); startCrop(selection, source, !props.cropMode); return;
-  }
   clearHold();
   if (pointers.size !== 1 || interaction) return;
   const pointerId = event.pointerId;
@@ -843,7 +956,7 @@ function keyDown(event: KeyboardEvent) {
 }
 
 function suppressCompatibility(event: Event) {
-  if (inlineActive.value || navigationGesture || (performance.now() < suppressTapUntil && ['click', 'dblclick', 'mouseup', 'touchend'].includes(event.type))) {
+  if (cropActive.value || navigationGesture || (performance.now() < suppressTapUntil && ['click', 'dblclick', 'mouseup', 'touchend'].includes(event.type))) {
     if (event.cancelable) event.preventDefault();
     event.stopImmediatePropagation();
   }
@@ -852,6 +965,9 @@ function suppressCompatibility(event: Event) {
 function wheel(event: WheelEvent) {
   if (exporting || props.playing || props.tool !== 'select') return;
   if ((props.cropMode || props.inlineCropMode) && props.selection) {
+    stage?.setPointersPositions(event);
+    const hit = hitSelection();
+    if (hit ? hit.kind !== props.selection.kind || hit.id !== props.selection.id : !props.cropMode) return;
     const source = selectedCrop(props.selection);
     if (!source) return;
     event.preventDefault();
@@ -874,14 +990,15 @@ function wheel(event: WheelEvent) {
 }
 
 async function renderFrameNow(time: number, pixelRatio: number): Promise<HTMLCanvasElement> {
-  await waitForIdle();
-  await buildPromise;
-  if (pendingBuild) { await rebuild(); await buildPromise; }
-  if (!stage || !layer || !root) throw new Error('画布尚未准备完成。');
+  while (mounted) {
+    await flushBuilds();
+    const revision = buildRevision;
+    await Promise.all([...resources.values()].map(resource => resource.ready));
+    await nextTick();
+    if (revision === buildRevision && !pendingBuild && !buildRunning) break;
+  }
+  if (!mounted || !stage || !layer || !root) throw new Error('画布尚未准备完成。');
   const doc = props.document;
-  await ensureSceneFonts(doc.elements);
-  await buildPromise;
-  await Promise.all([...resources.values()].map(resource => resource.ready));
   const original = { width: stage.width(), height: stage.height(), x: stage.x(), y: stage.y(), scaleX: stage.scaleX(), scaleY: stage.scaleY(), time: previewTime, listening: stage.listening(), sceneRatio: layer.getCanvas().getPixelRatio(), hitRatio: layer.getHitCanvas().getPixelRatio() };
   const originalVideos = videos.map(binding => ({ binding, time: binding.video.currentTime, paused: binding.video.paused }));
   const ratio = Math.max(1 / Math.min(doc.width, doc.height), pixelRatio);
@@ -931,6 +1048,7 @@ async function renderFrameNow(time: number, pixelRatio: number): Promise<HTMLCan
       if (patternNode) {
         const ratio = Math.min(1, viewport.value.scale * original.sceneRatio);
         patternNode.cache({ x: 0, y: 0, width: doc.width, height: doc.height, pixelRatio: ratio, hitCanvasPixelRatio: ratio });
+        patternCacheRatio = ratio;
       }
       for (const binding of drawingBindings) cacheDrawing(binding);
       await Promise.allSettled(originalVideos.map(async ({ binding, time: savedTime, paused }) => {
@@ -942,7 +1060,7 @@ async function renderFrameNow(time: number, pixelRatio: number): Promise<HTMLCan
       for (const image of exportImages) image.width = image.height = 0;
       exporting = false; updateSelection(); layer.draw();
       resize();
-      if (pendingBuild) scheduleBuild();
+      queueBuild();
       if (mounted && props.playing) { clockStart = performance.now() - previewTime * 1000; raf = requestAnimationFrame(tick); }
     }
   }
@@ -972,8 +1090,7 @@ function renderFrame(time: number, pixelRatio = 1, document?: EditorDocument): P
 
 async function elementBounds(id: string): Promise<{ width: number; height: number } | null> {
   await ensureSceneFonts(props.document.elements);
-  await nextTick();
-  await buildPromise;
+  await flushBuilds();
   const node = elementNodes.get(id);
   return node ? { width: node.width(), height: node.height() } : null;
 }
@@ -986,10 +1103,7 @@ watch(() => JSON.stringify([
   props.document.background, props.document.slots, props.document.elements,
   props.document.padding, props.document.gap, props.document.cornerRadius, props.document.photoFrame,
   props.document.animation, props.document.duration,
-]), () => {
-  if (interaction || exporting) { pendingBuild = true; return; }
-  scheduleBuild();
-});
+]), scheduleBuild);
 watch(() => props.assets, () => { cancelGesture(); scheduleBuild(); }, { deep: true });
 watch(() => [props.selection?.kind, props.selection?.id], () => {
   const expected = cropGesture?.selection ?? hold?.selection;
@@ -1022,6 +1136,7 @@ watch(() => props.playing, playing => {
 
 onMounted(async () => {
   await nextTick();
+  if (disposed) return;
   stage = stageRef.value?.getNode();
   if (!stage || !host.value) return;
   mounted = true;
@@ -1046,8 +1161,12 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  disposed = true; mounted = false;
   cancelGesture();
-  mounted = false; ++buildGeneration; cancelAnimationFrame(raf); resizeObserver?.disconnect(); window.removeEventListener('resize', resizeForViewport);
+  ++buildGeneration; cancelAnimationFrame(raf); cancelAnimationFrame(buildFrame); cancelAnimationFrame(cacheFrame);
+  buildFrame = cacheFrame = 0; pendingBuild = false;
+  resolveBuild?.(); resolveBuild = undefined;
+  resizeObserver?.disconnect(); window.removeEventListener('resize', resizeForViewport);
   for (const resolve of idleWaiters) resolve();
   idleWaiters.clear();
   if (documentRenderer) { renderVNode(null, documentRenderer); documentRenderer = undefined; }

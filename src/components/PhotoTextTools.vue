@@ -26,6 +26,7 @@ const tabId = useId();
 const tabs = [{ value: 'content', label: '内容' }, { value: 'font', label: '字体' }, { value: 'background', label: '底色' }, { value: 'layout', label: '排版' }] as const;
 const activeTab = ref<(typeof tabs)[number]['value']>('content');
 const textLayers = computed(() => props.document.elements.filter((element): element is TextElement => element.type === 'text').slice().reverse());
+const textLayerIds = computed(() => textLayers.value.map(text => text.id));
 const selectedText = computed(() => props.selection?.kind === 'element' ? textLayers.value.find(text => text.id === props.selection?.id) : undefined);
 const appearance = computed(() => selectedText.value ?? chosenStyle.value);
 const locked = computed(() => selectedText.value?.locked ?? false);
@@ -64,7 +65,14 @@ watch(() => [selectedText.value?.id, props.pending] as const, ([id, pending], pr
     submittedDraft.value = undefined;
   } else if (!pending && previous?.[1]) submittedDraft.value = undefined;
 });
-watch(() => selectedText.value?.id, async () => { activeTab.value = 'content'; await nextTick(); if (scroller.value) scroller.value.scrollTop = 0; });
+watch([() => props.document.id, () => selectedText.value?.id, textLayerIds], async ([documentId, id], [previousDocumentId, previousId, previousIds]) => {
+  // Compare structural snapshots so history-restored or newly inserted layers
+  // are not mistaken for a switch between layers that were already present.
+  if (documentId === previousDocumentId && (id === previousId || (id && previousId && previousIds.includes(id)))) return;
+  activeTab.value = 'content';
+  await nextTick();
+  if (scroller.value) scroller.value.scrollTop = 0;
+});
 watch(activeTab, async () => {
   compositionId = undefined;
   checkpointAfterComposition = false;
@@ -158,11 +166,11 @@ defineExpose({ addText });
       </div>
       <button v-if="!selectedText" type="button" class="text-add-button" :disabled="adding || !draft.trim()" :aria-busy="adding" aria-label="添加文字到照片" @click="addText"><Plus :size="17" aria-hidden="true" /><span>{{ adding ? '准备中' : '添加' }}</span></button>
     </div>
+    <div v-if="textLayers.length" class="text-toolbar">
+      <AppSelect :value="selectedText?.id ?? ''" :options="layerOptions" label="选择文字图层" :disabled="pending" @change="id => act({ type: 'selection', selection: id ? { kind: 'element', id: String(id) } : null })" />
+      <button type="button" class="text-new" :disabled="pending" aria-label="新建照片文字" @click="newText"><Plus :size="17" aria-hidden="true" />新建</button>
+    </div>
     <div :id="`${tabId}-panel`" ref="scroller" class="text-tab-content" role="tabpanel" :aria-labelledby="`${tabId}-${activeTab}`" tabindex="0">
-      <div v-if="textLayers.length" class="text-toolbar">
-        <AppSelect :value="selectedText?.id ?? ''" :options="layerOptions" label="选择文字图层" :disabled="pending" @change="id => act({ type: 'selection', selection: id ? { kind: 'element', id: String(id) } : null })" />
-        <button type="button" class="text-new" :disabled="pending" aria-label="新建照片文字" @click="newText"><Plus :size="17" aria-hidden="true" />新建</button>
-      </div>
       <p v-if="pending && selectedText" class="text-hint" role="status">正在准备字体…</p>
       <p v-if="locked" class="text-notice"><Lock :size="15" aria-hidden="true" />已锁定，请在图层管理中解锁。</p>
       <p v-else-if="selectedText && !selectedText.visible" class="text-notice">这段文字已隐藏，可在图层管理中显示。</p>

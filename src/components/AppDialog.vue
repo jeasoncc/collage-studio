@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogDescription, DialogClose } from 'reka-ui';
 withDefaults(defineProps<{ open: boolean; title: string; description?: string; wide?: boolean; locked?: boolean }>(), { description: '', wide: false, locked: false });
-const emit = defineEmits<{ 'update:open': [value: boolean] }>();
+const emit = defineEmits<{ 'update:open': [value: boolean]; 'open-auto-focus': [event: Event] }>();
 </script>
 
 <template>
   <DialogRoot :open="open" @update:open="value => !locked && emit('update:open', value)">
     <DialogPortal>
       <DialogOverlay class="dialog-overlay" />
-      <DialogContent class="dialog-content" :class="{ wide, 'dialog-with-footer': !!$slots.footer }" @escape-key-down="event => locked && event.preventDefault()" @pointer-down-outside="event => locked && event.preventDefault()">
+      <DialogContent class="dialog-content" :class="{ wide, 'dialog-with-footer': !!$slots.footer }" @open-auto-focus="event => emit('open-auto-focus', event)" @escape-key-down="event => locked && event.preventDefault()" @pointer-down-outside="event => locked && event.preventDefault()">
         <header class="dialog-header">
           <div><DialogTitle class="dialog-title">{{ title }}</DialogTitle><DialogDescription class="dialog-description">{{ description }}</DialogDescription></div>
           <DialogClose v-if="!locked" class="dialog-close text-button">关闭</DialogClose>

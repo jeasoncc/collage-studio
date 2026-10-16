@@ -5,6 +5,7 @@ import { templates, chineseFestivals } from '../catalog/templates';
 import { photoPostersForCount } from '../catalog/photoPosters';
 import type { TemplatePreset } from '../types';
 import TemplatePreview from './TemplatePreview.vue';
+import PrivacyPolicy from './PrivacyPolicy.vue';
 
 const props = defineProps<{
   photos: readonly { name: string; label: string; url: string; source: string }[];
@@ -19,6 +20,7 @@ const emit = defineEmits<{
   preview: [template: TemplatePreset, event: MouseEvent];
 }>();
 
+const privacyOpen = defineModel<boolean>('privacyOpen', { default: false });
 const heroPhotos = computed(() => props.photos.slice(0, 3));
 const inspiration = photoPostersForCount(3).slice(0, 4);
 const holidayCards = computed(() => {
@@ -77,7 +79,14 @@ const holidayCards = computed(() => {
       </section>
     </div>
 
-    <footer class="home-footer"><p><ShieldCheck :size="17" aria-hidden="true" /><span>照片不上传 · 作品保存在当前设备</span></p><a v-if="registrationNumber" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">{{ registrationNumber }}</a></footer>
+    <footer class="home-footer">
+      <p><ShieldCheck :size="17" aria-hidden="true" /><span>照片不上传 · 作品保存在当前设备</span></p>
+      <div class="home-footer-links">
+        <button type="button" class="home-privacy-link" :disabled="disabled" aria-haspopup="dialog" :aria-expanded="privacyOpen" @click="privacyOpen = true">隐私政策</button>
+        <a v-if="registrationNumber" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">{{ registrationNumber }}</a>
+      </div>
+    </footer>
+    <PrivacyPolicy v-model:open="privacyOpen" />
   </div>
 </template>
 
@@ -136,6 +145,10 @@ const holidayCards = computed(() => {
 .home-footer p { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .home-footer p svg { flex-shrink: 0; }
 .home-footer a { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; margin-top: 4px; color: var(--muted); font-size: 12px; text-decoration: none; overflow-wrap: anywhere; }
+.home-footer-links { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0 16px; margin-top: 4px; }
+.home-footer-links a { margin-top: 0; }
+.home-privacy-link { padding: 8px 10px; border: 0; border-radius: 12px; background: transparent; color: var(--muted) !important; font-size: 12px !important; }
+.home-privacy-link:hover:not(:disabled) { color: var(--accent) !important; background: var(--accent-soft); }
 @media (hover: hover) {
   .home-start:hover:not(:disabled) { background: var(--accent-hover); }
   .home-sample:hover:not(:disabled), .home-template:hover:not(:disabled) { border-color: var(--accent); }

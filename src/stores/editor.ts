@@ -136,8 +136,11 @@ export const useEditorStore = defineStore('editor', () => {
     committed = fingerprint(history.last.value.snapshot);
     if (cropSession.value?.pageId === doc.id) cropSession.value.updatedAt = updatedAt;
   }
+  function selectionExists(next: Exclude<Selection, null>) {
+    return next.kind === 'slot' ? document.value.mode === 'grid' && document.value.slots.some(slot => slot.id === next.id) : document.value.elements.some(element => element.id === next.id);
+  }
   function select(next: Selection) {
-    selection.value = next && (next.kind === 'slot' ? document.value.mode === 'grid' && document.value.slots.some(slot => slot.id === next.id) : document.value.elements.some(element => element.id === next.id)) ? { ...next } : null;
+    selection.value = next && selectionExists(next) ? { ...next } : null;
   }
   function clearOldAssets(next: MediaAsset[]) {
     const retained = new Set(next.flatMap(asset => [asset.src, asset.thumbnail]));
@@ -863,12 +866,18 @@ export const useEditorStore = defineStore('editor', () => {
     if (cropEditing.value) cancelCropSession();
     checkpoint();
     if (!history.canUndo.value) return;
-    history.undo(); committed = fingerprint(); selection.value = null; revision.value++;
+    const pageId = document.value.id;
+    history.undo(); committed = fingerprint();
+    if (document.value.id !== pageId || (selection.value && !selectionExists(selection.value))) selection.value = null;
+    revision.value++;
   }
   function redo() {
     if (cropEditing.value) cancelCropSession();
     if (fingerprint() !== committed || !history.canRedo.value) return;
-    history.redo(); committed = fingerprint(); selection.value = null; revision.value++;
+    const pageId = document.value.id;
+    history.redo(); committed = fingerprint();
+    if (document.value.id !== pageId || (selection.value && !selectionExists(selection.value))) selection.value = null;
+    revision.value++;
   }
   function addPage(duplicate = false) {
     if (cropEditing.value) cancelCropSession();

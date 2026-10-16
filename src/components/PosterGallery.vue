@@ -5,7 +5,7 @@ import { photoPostersForCount } from '../catalog/photoPosters';
 import type { CollageSlot, EditorDocument, ImageElement, MediaAsset, TemplatePreset } from '../types';
 import TemplatePreview from './TemplatePreview.vue';
 
-const props = defineProps<{ document: EditorDocument; assets: Record<string, MediaAsset> }>();
+const props = withDefaults(defineProps<{ document: EditorDocument; assets: Record<string, MediaAsset>; compact?: boolean; embedded?: boolean }>(), { compact: false, embedded: false });
 const emit = defineEmits<{ select: [template: TemplatePreset] }>();
 const selectedCategory = ref('全部');
 const photos = computed(() => {
@@ -21,31 +21,38 @@ const photos = computed(() => {
 });
 const presets = computed(() => photoPostersForCount(photos.value.length));
 const categories = computed(() => ['全部', ...new Set(presets.value.map(preset => preset.category))]);
-const cards = computed(() => presets.value.filter(preset => selectedCategory.value === '全部' || preset.category === selectedCategory.value));
+const activeCategory = computed(() => categories.value.includes(selectedCategory.value) ? selectedCategory.value : '全部');
+const cards = computed(() => presets.value.filter(preset => props.compact || activeCategory.value === '全部' || preset.category === activeCategory.value));
 </script>
 
 <template>
-  <section class="poster-gallery" aria-label="当前照片的海报方案">
-    <header class="poster-heading">
+  <section class="poster-gallery" :class="{ 'is-compact': compact, 'is-embedded': embedded }" aria-label="当前照片的海报方案">
+    <header v-if="!compact && !embedded" class="poster-heading">
       <div><span class="poster-eyebrow">照片海报</span><strong>给 {{ photos.length }} 张照片换个封面</strong></div>
       <p>每张照片都保留。先看大图，喜欢再应用。</p>
     </header>
     <template v-if="presets.length">
-      <div class="poster-categories" role="group" aria-label="海报风格分类">
-        <button v-for="category in categories" :key="category" type="button" :class="{ active: selectedCategory === category }" :aria-pressed="selectedCategory === category" @click="selectedCategory = category">{{ category }}</button>
+      <div v-if="!compact" class="poster-categories" role="group" aria-label="海报风格分类">
+        <button v-for="category in categories" :key="category" type="button" :class="{ active: activeCategory === category }" :aria-pressed="activeCategory === category" @click="selectedCategory = category">{{ category }}</button>
       </div>
       <div class="poster-cards" aria-label="选择海报设计">
-        <button v-for="(template, index) in cards" :key="template.id" type="button" class="poster-card" :aria-label="`预览${template.category}海报：${template.name}，保留全部 ${photos.length} 张照片；确认后才会应用`" @click="emit('select', template)">
+        <button v-for="(template, index) in cards" :key="template.id" type="button" class="poster-card" aria-haspopup="dialog" :aria-label="`预览${template.category}海报：${template.name}，保留全部 ${photos.length} 张照片；确认后才会应用`" @click="emit('select', template)">
           <div class="poster-preview" :style="{ backgroundColor: template.background.color }">
             <TemplatePreview :template="template" :photos="photos" :eager="index === 0" />
           </div>
-          <div class="poster-card-heading"><span class="poster-style">{{ template.category }}</span><span class="poster-count"><Images :size="13" aria-hidden="true" />{{ photos.length }} 张</span></div>
-          <strong class="poster-name">{{ template.name }}</strong>
-          <span class="poster-card-note">4:5 竖版 · 标题与装饰都能改</span>
-          <span class="poster-action">查看大图<ArrowRight :size="18" aria-hidden="true" /></span>
+          <template v-if="compact">
+            <strong class="poster-name">{{ template.name }}</strong>
+            <span class="poster-compact-note">查看大图 · {{ photos.length }} 张</span>
+          </template>
+          <template v-else>
+            <div class="poster-card-heading"><span class="poster-style">{{ template.category }}</span><span class="poster-count"><Images :size="13" aria-hidden="true" />{{ photos.length }} 张</span></div>
+            <strong class="poster-name">{{ template.name }}</strong>
+            <span class="poster-card-note">4:5 竖版 · 标题与装饰都能改</span>
+            <span class="poster-action">查看大图<ArrowRight :size="18" aria-hidden="true" /></span>
+          </template>
         </button>
       </div>
-      <p class="poster-note">预览使用你的照片、裁切与调色；首张照片做主角。确认应用后仍可修改文字、调整裁切，也能撤销回到原来的作品。</p>
+      <p v-if="!compact" class="poster-note">预览使用你的照片、裁切与调色；首张照片做主角。确认应用后仍可修改文字、调整裁切，也能撤销回到原来的作品。</p>
     </template>
     <p v-else class="poster-empty" role="status">添加 1–20 张照片，即可查看保留全部照片的海报方案。</p>
   </section>
@@ -76,6 +83,13 @@ const cards = computed(() => presets.value.filter(preset => selectedCategory.val
 .poster-note, .poster-empty { margin: 18px 0 0; color: var(--muted); font-size: 12px; line-height: 1.8; }
 .poster-empty { padding: 24px 18px; border: 1px solid var(--line); border-radius: 24px; background: var(--surface); text-align: center; }
 .poster-categories button:focus-visible, .poster-card:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.is-embedded .poster-categories { padding-bottom: 10px; }
+.is-compact .poster-cards { display: flex; align-items: stretch; gap: 10px; max-width: 100%; overflow-x: auto; padding: 4px 3px 6px; scroll-padding-inline: 4px; overscroll-behavior-x: contain; scroll-snap-type: x proximity; }
+.is-compact .poster-card { flex: 0 0 144px; gap: 2px; min-height: 118px; padding: 4px; border-radius: 17px; scroll-snap-align: start; }
+.is-compact .poster-preview { flex: none; width: 100%; height: 72px; aspect-ratio: auto; border-radius: 12px; }
+.is-compact .poster-name { margin: 0 3px; font-size: 12px; line-height: 18px; text-align: center; }
+.poster-compact-note { color: var(--muted); font-size: 10px; line-height: 14px; text-align: center; }
+.is-compact .poster-empty { margin: 0; padding: 18px 12px; border-radius: 17px; }
 @media (max-width: 540px) {
   .poster-heading strong { font-size: 19px; }
   .poster-categories { gap: 6px; }

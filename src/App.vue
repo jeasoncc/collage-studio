@@ -15,8 +15,6 @@ import PhotoSelectionSheet from './components/PhotoSelectionSheet.vue';
 import PhotoImportProgress from './components/PhotoImportProgress.vue';
 import CollageTools from './components/CollageTools.vue';
 import PhotoTextTools from './components/PhotoTextTools.vue';
-import LayoutGallery from './components/LayoutGallery.vue';
-import CollageStyleGallery from './components/CollageStyleGallery.vue';
 import AppSelect from './components/AppSelect.vue';
 import AppTabBar from './components/AppTabBar.vue';
 import AppNumber from './components/AppNumber.vue';
@@ -51,6 +49,7 @@ const registrationNumber = window.location.hostname === 'collage.szlh.top' ? '�
 const brandLogoUrl = `${import.meta.env.BASE_URL}icons/icon-192.png`;
 const pwaStatus = ref<PwaStatusHandle>();
 const view = ref<'home' | 'editor' | 'templates' | 'drafts'>('home');
+const privacyOpen = ref(false);
 const projectTitle = ref(store.project.title);
 const titleEditing = ref(false);
 const textDraft = computed({ get: () => store.document.textDraft, set: (value: string) => store.setTextDraft(value) });
@@ -101,6 +100,8 @@ const photoSelection = ref<{ closePreview: () => boolean; openPreview: (id: stri
 const photoPreviewOpen = ref(false);
 const panel = ref<PanelName>('layouts');
 const panelOpen = ref(true);
+const dockExpanded = ref(false);
+watch(() => store.project.id, () => { dockExpanded.value = false; });
 const moreOpen = ref(false);
 const selectionActionsOpen = ref(false);
 const pageActionsOpen = ref(false);
@@ -150,8 +151,7 @@ const pendingLeave = ref<{ target: 'home' | 'templates' | 'drafts'; error: strin
 const leaveFailedOpen = computed({ get: () => pendingLeave.value !== null, set: (open: boolean) => { if (!open) pendingLeave.value = null; } });
 const sizeOpen = ref(false);
 const textOpen = ref(false);
-const designBrowser = ref<'layouts' | 'looks' | null>(null);
-const designBrowserOpen = computed({ get: () => designBrowser.value !== null, set: (open: boolean) => { if (!open) designBrowser.value = null; } });
+const textInput = ref<HTMLTextAreaElement>();
 const pendingDesign = shallowRef<TemplatePreset | null>(null);
 const designConfirmOpen = computed({ get: () => pendingDesign.value !== null, set: (open: boolean) => { if (!open) pendingDesign.value = null; } });
 const deleteDraftOpen = ref(false);
@@ -163,6 +163,8 @@ const customWidth = ref(1080);
 const customHeight = ref(1080);
 const exportFormat = ref<ExportOptions['format']>('png');
 const exportScale = ref(1);
+const projectExportScales = new Map<string, number>();
+let exportScaleProjectId = '';
 const staticExportQuality = ref(.94);
 const motionExportQuality = ref(.94);
 const exportQuality = computed(() => isAnimatedExport.value ? motionExportQuality.value : staticExportQuality.value);
@@ -254,12 +256,12 @@ const selectedPhotoNumber = computed(() => placedPhotos.value.findIndex(photo =>
 const musicAsset = computed(() => doc.value.audio ? store.assets[doc.value.audio.assetId] : null);
 const toolItems: Array<{ id: PanelName; label: string; icon: Component }> = [
   { id: 'photos', label: '照片', icon: Images }, { id: 'layouts', label: '布局', icon: Grid2X2 },
-  { id: 'text', label: '文字', icon: Type }, { id: 'looks', label: '样式', icon: Palette },
-  { id: 'background', label: '画布', icon: Expand },
+  { id: 'text', label: '文字', icon: Type },
 ];
-const toolIndex = computed(() => moreOpen.value ? toolItems.length : toolItems.findIndex(item => item.id === panel.value || item.id === 'looks' && panel.value === 'spacing'));
-const activeToolIndex = computed(() => toolIndex.value < 0 ? toolItems.length : toolIndex.value);
+const toolIndex = computed(() => moreOpen.value ? toolItems.length : toolItems.findIndex(item => item.id === panel.value || item.id === 'layouts' && (panel.value === 'looks' || panel.value === 'spacing')));
 const extraTools: Array<{ id: PanelName; label: string; icon: Component }> = [
+  { id: 'looks', label: '照片风格', icon: Palette }, { id: 'spacing', label: '留白与圆角', icon: SlidersHorizontal },
+  { id: 'background', label: '画布与背景', icon: Expand },
   { id: 'templates', label: '设计模板', icon: LayoutTemplate },
   { id: 'stickers', label: '贴纸装饰', icon: Sticker }, { id: 'draw', label: '形状与涂鸦', icon: Brush },
   { id: 'layers', label: '图层管理', icon: Layers }, { id: 'animation', label: '动画效果', icon: Sparkles },
@@ -271,9 +273,27 @@ const photoCount = computed(() => placedPhotos.value.length);
 const motionFormats: Partial<Record<ExportOptions['format'], true>> = { gif: true, mp4: true, webm: true };
 const isAnimatedExport = computed(() => !!motionFormats[exportFormat.value]);
 const exportDimensions = computed(() => !isAnimatedExport.value && store.project.pages.length > 1 ? '按各自画布尺寸' : `${Math.round(doc.value.width * exportScale.value)} × ${Math.round(doc.value.height * exportScale.value)} 像素`);
+const exportSaveHint = computed(() => {
+  if (busy.value) return `${busy.value}，请保持页面打开。`;
+  if (exportPreviewLoading.value) return '正在准备预览，尚未生成导出文件。';
+  const multipleImages = !isAnimatedExport.value && store.project.pages.length > 1;
+  if (!exportResult.value) {
+    if (multipleImages) return `当前为 ${store.project.pages.length} 张图片的预览。${nativeApp ? '保存' : '下载'}时生成全部图片并打包为 ZIP；项目备份仍保留全部原始素材。`;
+    if (nativeApp) return `${isAnimatedExport.value ? '当前为静态预览，尚未生成动态文件' : '当前为预览图'}。保存时生成导出文件，保存在所选系统文件位置，不会自动写入相册。`;
+    if (isAnimatedExport.value) return '当前为静态预览，尚未生成动态文件。生成后可下载；支持的平台也可使用系统分享。';
+    return '当前为预览图。点“下载图片”生成完整图片，请勿长按保存此预览。';
+  }
+  if (multipleImages) return `${store.project.pages.length} 张图片已生成并打包为 ZIP。解压后可逐张查看或分享；项目备份仍保留全部原始素材。`;
+  const result = `${isAnimatedExport.value ? '动态文件' : '导出图'}已生成 · ${exportDimensions.value}。`;
+  if (nativeApp) return `${result}请选择系统文件位置保存，不会自动写入相册；继续编辑请另存项目备份。`;
+  const share = shareAvailable ? '或使用系统分享' : '';
+  return isAnimatedExport.value
+    ? `${result}可下载到浏览器下载列表${share}。`
+    : `${result}可下载${share}；手机也可长按上方完整图片保存。`;
+});
 const swapFirst = ref<string | null>(null);
 const dockOpen = computed(() => !cropMode.value && (panelOpen.value || advancedOpen.value));
-const inlineDisabled = computed(() => !!busy.value || isSaving.value || textPending.value || !!swapFirst.value || pickerOpen.value || moreOpen.value || selectionActionsOpen.value || pageActionsOpen.value || exportOpen.value || textOpen.value || sizeOpen.value || !!designBrowser.value || !!pendingDesign.value || !!pendingTextAction.value || !!pendingLeave.value);
+const inlineDisabled = computed(() => !!busy.value || isSaving.value || textPending.value || !!swapFirst.value || pickerOpen.value || moreOpen.value || selectionActionsOpen.value || pageActionsOpen.value || exportOpen.value || textOpen.value || sizeOpen.value || !!pendingDesign.value || !!pendingTextAction.value || !!pendingLeave.value);
 let previewStarted = 0;
 let previewOriginalPage = '';
 
@@ -302,6 +322,14 @@ function choosePanel(id: PanelName) {
   panel.value = id;
   if (id !== 'draw') tool.value = 'select';
 }
+function closePanel() {
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  panelOpen.value = false; advancedOpen.value = false; tool.value = 'select';
+}
+function browseDesigns(id: 'layouts' | 'looks') {
+  if (panel.value !== id || !dockOpen.value) choosePanel(id);
+  dockExpanded.value = true;
+}
 function openShapeEditor() {
   tool.value = 'select';
   choosePanel('draw');
@@ -315,6 +343,19 @@ function select(selection: Selection) {
   if (swapFirst.value && selection?.kind === 'slot') {
     if (selection.id !== swapFirst.value) store.swapSlots(swapFirst.value, selection.id);
     swapFirst.value = null; notify('照片已交换。'); store.select(null); return;
+  }
+  if (selection) {
+    const element = selection.kind === 'element' ? doc.value.elements.find(element => element.id === selection.id) : undefined;
+    const assetKind = element?.type === 'image' ? store.assets[element.assetId]?.kind : undefined;
+    const photo = selection.kind === 'slot' || element?.type === 'image' && assetKind !== 'sticker' && assetKind !== 'audio';
+    const keepPanel = dockOpen.value && (
+      panel.value === 'layers' ||
+      panel.value === 'text' && element?.type === 'text' ||
+      panel.value === 'photos' && photo ||
+      panel.value === 'draw' && (element?.type === 'shape' || element?.type === 'drawing')
+    );
+    if (!keepPanel) closePanel();
+    else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   }
   store.select(selection);
   if (store.selected?.type === 'image' && !store.selected.assetId) uploadPhotos(true);
@@ -334,12 +375,13 @@ function beginCrop(target: Exclude<Selection, null>) {
 }
 function beginInlineCrop(target: Exclude<Selection, null>, explicit = false) {
   if (inlineDisabled.value || cropMode.value) return;
+  if (store.cropEditing && (store.selection?.kind !== target.kind || store.selection?.id !== target.id)) return;
   try {
+    closePanel();
     playing.value = false;
-    if (store.cropEditing && (store.selection?.kind !== target.kind || store.selection?.id !== target.id)) store.commitCropSession();
     if (!store.cropEditing) store.beginCropSession(target);
     if (!inlineCropMode.value) explicitInlineCrop = explicit;
-    inlineCropMode.value = true; tool.value = 'select';
+    inlineCropMode.value = true;
   } catch (error) { notify(errorMessage(error), true); }
 }
 function endInlineCrop(result: { cancelled: boolean }) {
@@ -351,13 +393,15 @@ function finishCrop(confirm: boolean) {
   cropMode.value = false; inlineCropMode.value = false; explicitInlineCrop = false;
   if (cropContext) { panelOpen.value = cropContext.panelOpen; advancedOpen.value = cropContext.advancedOpen; cropContext = undefined; }
   autoSave();
+  revealHistory();
 }
 function adjustCrop(patch: Partial<CropState>) {
   if (!store.selection || !crop.value) return;
   store.changeCrop({ ...store.selection, crop: { ...crop.value, ...patch } }, false);
 }
 function changeCanvasCrop(change: CropChange) {
-  const target = store.cropEditing ? store.selection : change;
+  if (store.cropEditing && (change.kind !== canvasSelection.value?.kind || change.id !== canvasSelection.value?.id)) return;
+  const target = cropMode.value ? store.selection : change;
   if (!target) return;
   store.changeCrop({ kind: target.kind, id: target.id, crop: change.crop }, false);
   if (!store.cropEditing) delayedCheckpoint();
@@ -366,7 +410,10 @@ function openPhotoAdjustments() {
   if (!hasImageSelection.value && placedPhotos.value[0]) store.select(photoTarget(placedPhotos.value[0].id));
   moreOpen.value = false; panelOpen.value = false; panel.value = 'photos'; advancedOpen.value = true;
 }
-function requestAsset(slotId: string) { store.select({ kind: 'slot', id: slotId }); uploadPhotos(true); }
+function requestAsset(slotId: string) {
+  if (store.cropEditing) return;
+  store.select({ kind: 'slot', id: slotId }); uploadPhotos(true);
+}
 function uploadPhotos(replace = false) {
   if (!replace) { managePhotos(); addPickerPhotos(); return; }
   if (store.cropEditing) finishCrop(true);
@@ -553,7 +600,7 @@ async function startExample() {
 }
 async function leaveEditor(target: 'home' | 'templates' | 'drafts') {
   if (store.cropEditing) finishCrop(false);
-  playing.value = false; moreOpen.value = false; advancedOpen.value = false; designBrowser.value = null;
+  playing.value = false; moreOpen.value = false; advancedOpen.value = false;
   pendingLeave.value = null; view.value = target;
   try { await refreshDrafts(); } catch (error) { notify(`作品列表读取失败：${errorMessage(error)}。当前会话中的作品仍保留。`, true); }
 }
@@ -595,7 +642,7 @@ function confirmDesign() {
   try {
     if (store.cropEditing) finishCrop(true);
     playing.value = false; store.applyTemplate(template); tool.value = 'select';
-    pendingDesign.value = null; panelOpen.value = false; advancedOpen.value = false; designBrowser.value = null;
+    pendingDesign.value = null; panelOpen.value = false; advancedOpen.value = false;
     notify('设计已应用，照片全部保留，文字与装饰可继续编辑；可一步撤销。');
   } catch (error) { notify(errorMessage(error), true); }
 }
@@ -789,7 +836,15 @@ async function onAudio(event: Event) {
   });
 }
 function draw(change: DrawingChange) { store.addDrawing(highlighter.value && change.tool === 'pen' ? { ...change, tool: 'highlighter' } : change); }
-function openText(id: string) { store.select({ kind: 'element', id }); if (store.selected?.type === 'text' && !store.selected.locked) { textValue.value = store.selected.text; textOpen.value = true; } }
+function openText(id: string) {
+  if (store.cropEditing) return;
+  store.select({ kind: 'element', id });
+  if (store.selected?.type === 'text' && !store.selected.locked) { textValue.value = store.selected.text; textOpen.value = true; }
+}
+function focusTextInput(event: Event) {
+  event.preventDefault();
+  textInput.value?.focus();
+}
 function applyText() { store.updateSelected({ text: textValue.value }); textOpen.value = false; }
 function applySize() {
   const long = doc.value.layoutId.startsWith('long-');
@@ -899,12 +954,22 @@ async function resolvePendingText(add: boolean) {
   } catch (error) { notify(errorMessage(error), true); }
   finally { resolvingPendingText.value = false; }
 }
+function setExportScale(scale: number) {
+  const maximum = maxExportScale.value;
+  exportScale.value = scale <= maximum ? scale : Math.min(maximum, Math.max(.5, Math.floor(maximum)));
+  exportScaleProjectId = store.project.id;
+  projectExportScales.set(exportScaleProjectId, exportScale.value);
+}
+watch(maxExportScale, maximum => {
+  if (exportScaleProjectId !== store.project.id || exportScale.value <= maximum) return;
+  setExportScale(exportScale.value); clearExportResult();
+});
 async function openExport(keepDraft = false) {
   commitProjectTitle(); if (textWork) await textWork;
   if (store.cropEditing) finishCrop(true);
   playing.value = false; exportFps.value = doc.value.fps;
   if (!keepDraft && textDraft.value.trim()) { pendingTextAction.value = { kind: 'export' }; return; }
-  exportScale.value = Math.min(2, Math.max(.5, Math.floor(maxExportScale.value)));
+  setExportScale(projectExportScales.get(store.project.id) ?? Math.min(2, Math.max(.5, Math.floor(maxExportScale.value))));
   clearExportResult(); clearExportPreviews(); exportOpen.value = true; exportPreviewLoading.value = true;
   const generation = ++previewGeneration;
   try {
@@ -1022,7 +1087,7 @@ useEventListener(window, 'keydown', event => {
     if (!busy.value && !pickerProcessing.value && !resolvingPendingText.value) void saveNow();
     return;
   }
-  if (busy.value || pickerOpen.value || designBrowser.value || pendingDesign.value || pendingTextAction.value || pendingLeave.value || moreOpen.value || selectionActionsOpen.value || pageActionsOpen.value || exportOpen.value || textOpen.value || sizeOpen.value || deleteDraftOpen.value || deletePageOpen.value || view.value !== 'editor') return;
+  if (busy.value || pickerOpen.value || pendingDesign.value || pendingTextAction.value || pendingLeave.value || moreOpen.value || selectionActionsOpen.value || pageActionsOpen.value || exportOpen.value || textOpen.value || sizeOpen.value || deleteDraftOpen.value || deletePageOpen.value || view.value !== 'editor') return;
   if (textPending.value) return;
   const target = event.target as HTMLElement | null;
   if (store.cropEditing) { if (event.key === 'Escape') { event.preventDefault(); finishCrop(false); } return; }
@@ -1042,11 +1107,55 @@ function dropFiles(event: DragEvent) {
 type AppView = 'home' | 'templates' | 'drafts' | 'editor';
 let routeReady = false;
 let handlingBack = false;
-const overlay = computed(() => photoPreviewOpen.value ? 'photo-preview' : pickerOpen.value ? 'photos' : templatePreviewOpen.value ? 'template-preview' : pendingDesign.value ? 'design-confirm' : pendingTextAction.value ? 'pending-text' : pendingLeave.value ? 'save-failed' : exportOpen.value ? 'export' : textOpen.value ? 'text' : sizeOpen.value ? 'size' : deleteDraftOpen.value ? 'delete-draft' : deletePageOpen.value ? 'delete-page' : designBrowser.value ? `design-${designBrowser.value}` : selectionActionsOpen.value ? 'selection-actions' : pageActionsOpen.value ? 'page-actions' : moreOpen.value ? 'more' : cropMode.value ? 'crop' : inlineCropMode.value && explicitInlineCrop ? 'inline-crop' : null);
+const overlay = computed(() => privacyOpen.value ? 'privacy' : photoPreviewOpen.value ? 'photo-preview' : pickerOpen.value ? 'photos' : templatePreviewOpen.value ? 'template-preview' : pendingDesign.value ? 'design-confirm' : pendingTextAction.value ? 'pending-text' : pendingLeave.value ? 'save-failed' : exportOpen.value ? 'export' : textOpen.value ? 'text' : sizeOpen.value ? 'size' : deleteDraftOpen.value ? 'delete-draft' : deletePageOpen.value ? 'delete-page' : selectionActionsOpen.value ? 'selection-actions' : pageActionsOpen.value ? 'page-actions' : moreOpen.value ? 'more' : cropMode.value ? 'crop' : inlineCropMode.value && explicitInlineCrop ? 'inline-crop' : null);
+const historyVisible = ref(false);
+const historyControls = ref<HTMLElement>();
+const editorPointers = new Set<number>();
+let historyTimer: ReturnType<typeof setTimeout> | undefined;
+let historyHovered = false;
+function hideHistory() {
+  clearTimeout(historyTimer);
+  historyVisible.value = false; historyHovered = false; editorPointers.clear();
+}
+function scheduleHistoryHide() {
+  clearTimeout(historyTimer);
+  if (!historyVisible.value || editorPointers.size || historyHovered) return;
+  historyTimer = setTimeout(() => {
+    const focused = document.activeElement;
+    if (focused?.matches(':focus-visible') && historyControls.value?.contains(focused)) return;
+    historyVisible.value = false;
+  }, 3500);
+}
+function revealHistory() {
+  if (view.value !== 'editor' || overlay.value || store.cropEditing || keyboardOpen.value || busy.value) return;
+  historyVisible.value = true;
+  scheduleHistoryHide();
+}
+function beginEditorInteraction(event: PointerEvent) {
+  if ((event.target as Element).closest('.editor-back')) return;
+  editorPointers.add(event.pointerId);
+  revealHistory();
+}
+function endEditorInteraction(event: PointerEvent) {
+  if (editorPointers.delete(event.pointerId)) scheduleHistoryHide();
+}
+function hoverHistory(event: PointerEvent, hovered: boolean) {
+  if (event.pointerType !== 'mouse') return;
+  historyHovered = hovered;
+  if (hovered) clearTimeout(historyTimer); else scheduleHistoryHide();
+}
+useEventListener(window, 'pointerup', endEditorInteraction, { capture: true });
+useEventListener(window, 'pointercancel', endEditorInteraction, { capture: true });
+useEventListener(window, 'blur', hideHistory);
+watch([view, overlay, keyboardOpen, () => store.cropEditing], () => {
+  if (view.value !== 'editor' || overlay.value || keyboardOpen.value || store.cropEditing) hideHistory();
+});
+watch(() => store.project.id, hideHistory);
+watch(() => store.revision, revealHistory);
 function overlaySnapshot(position: number): OverlaySnapshot {
   return {
     position, pageId: doc.value.id, selection: store.selection ? { ...store.selection } : null,
-    panel: panel.value, panelOpen: panelOpen.value, advancedOpen: advancedOpen.value,
+    panel: panel.value, panelOpen: panelOpen.value, advancedOpen: advancedOpen.value, dockExpanded: dockExpanded.value,
     pickerIntent: pickerIntent.value, creationRatio: creationRatio.value, pendingTemplate: pendingTemplate.value,
     items: pickerItems.value.map(item => ({ id: item.id, assetId: item.asset.id, asset: item.asset as MediaAsset | undefined })),
     photoPreviewId: photoSelection.value?.getPreviewId() ?? null,
@@ -1068,6 +1177,7 @@ interface OverlaySnapshot {
   panel: PanelName;
   panelOpen: boolean;
   advancedOpen: boolean;
+  dockExpanded: boolean;
   pickerIntent: 'create' | 'manage';
   creationRatio: string;
   pendingTemplate: TemplatePreset | null;
@@ -1133,10 +1243,11 @@ watch([view, () => store.project.id, overlay], ([nextView, id, nextOverlay]) => 
   else writeRoute(true);
 });
 function closeOverlays() {
+  privacyOpen.value = false;
   templateGallery.value?.closePreview(); editorPanel.value?.closeTemplatePreview();
   pendingDesign.value = null; pendingTextAction.value = null; pendingLeave.value = null;
   pickerOpen.value = false; exportOpen.value = false; moreOpen.value = false; selectionActionsOpen.value = false; pageActionsOpen.value = false;
-  textOpen.value = false; sizeOpen.value = false; deleteDraftOpen.value = false; deletePageOpen.value = false; designBrowser.value = null;
+  textOpen.value = false; sizeOpen.value = false; deleteDraftOpen.value = false; deletePageOpen.value = false;
   if (store.cropEditing) finishCrop(false);
 }
 async function restorePicker(snapshot: OverlaySnapshot) {
@@ -1174,8 +1285,9 @@ async function restorePicker(snapshot: OverlaySnapshot) {
 }
 async function restoreOverlay(kind: NonNullable<typeof overlay.value>, snapshot: OverlaySnapshot) {
   if (view.value === 'editor') { store.selectPage(snapshot.pageId); store.select(snapshot.selection); }
-  panel.value = snapshot.panel; panelOpen.value = snapshot.panelOpen; advancedOpen.value = snapshot.advancedOpen;
+  panel.value = snapshot.panel; panelOpen.value = snapshot.panelOpen; advancedOpen.value = snapshot.advancedOpen; dockExpanded.value = snapshot.dockExpanded;
   switch (kind) {
+    case 'privacy': privacyOpen.value = true; break;
     case 'photos': case 'photo-preview': {
       const ids = await restorePicker(snapshot); await nextTick();
       if (kind === 'photo-preview' && snapshot.photoPreviewId) photoSelection.value?.openPreview(ids.get(snapshot.photoPreviewId) ?? snapshot.photoPreviewId);
@@ -1192,7 +1304,7 @@ async function restoreOverlay(kind: NonNullable<typeof overlay.value>, snapshot:
     case 'save-failed': pendingLeave.value = snapshot.pendingLeave; break;
     case 'export':
       await openExport(true);
-      exportFormat.value = snapshot.exportFormat; exportScale.value = snapshot.exportScale;
+      exportFormat.value = snapshot.exportFormat; setExportScale(snapshot.exportScale);
       staticExportQuality.value = snapshot.staticExportQuality; motionExportQuality.value = snapshot.motionExportQuality;
       exportFps.value = snapshot.exportFps; exportAllPages.value = snapshot.exportAllPages;
       break;
@@ -1200,8 +1312,6 @@ async function restoreOverlay(kind: NonNullable<typeof overlay.value>, snapshot:
     case 'size': customWidth.value = snapshot.customWidth; customHeight.value = snapshot.customHeight; sizeOpen.value = true; break;
     case 'delete-draft': pendingDraftIds.value = snapshot.pendingDraftIds.filter(id => drafts.value.some(draft => draft.id === id)); deleteDraftOpen.value = pendingDraftIds.value.length > 0; break;
     case 'delete-page': pendingPageId.value = snapshot.pendingPageId; deletePageOpen.value = true; break;
-    case 'design-layouts': designBrowser.value = 'layouts'; break;
-    case 'design-looks': designBrowser.value = 'looks'; break;
     case 'selection-actions': selectionActionsOpen.value = true; break;
     case 'page-actions': pageActionsOpen.value = true; break;
     case 'more': moreOpen.value = true; break;
@@ -1274,6 +1384,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   removeNativeLinkHandler?.();
   overlaySnapshots.clear();
+  clearTimeout(historyTimer);
   clearTimeout(toastTimer); abortController?.abort(); clearExportResult(); clearStagedPhotos();
   document.documentElement.style.removeProperty('--visible-height');
   document.documentElement.style.removeProperty('--visible-top');
@@ -1299,7 +1410,7 @@ onBeforeUnmount(() => {
     <PwaStatus ref="pwaStatus" :allow-update="view !== 'editor' && !busy && !isSaving && !textPending && !textDraft.trim() && !store.dirty && !overlay" />
     <main class="app-content" @dragover.prevent @drop="dropFiles">
       <section v-show="view === 'home'" class="app-page" data-page="home" :class="{ 'is-current': view === 'home' }">
-        <HomeScreen :photos="examplePhotos" :disabled="!!busy || pickerProcessing || textPending" :example-loading="exampleLoading" :registration-number="registrationNumber" @start="beginSelection" @sample="startExample" @browse="browseTemplates" @preview="(template, event) => templateGallery?.openPreview(template, event)" />
+        <HomeScreen v-model:privacy-open="privacyOpen" :photos="examplePhotos" :disabled="!!busy || pickerProcessing || textPending" :example-loading="exampleLoading" :registration-number="registrationNumber" @start="beginSelection" @sample="startExample" @browse="browseTemplates" @preview="(template, event) => templateGallery?.openPreview(template, event)" />
       </section>
       <section v-show="view === 'templates'" class="app-page" data-page="templates" :class="{ 'is-current': view === 'templates' }">
         <div class="library-heading"><div><h1>模板</h1><p>先看真实效果，再放入你的照片。</p></div></div>
@@ -1312,46 +1423,31 @@ onBeforeUnmount(() => {
     <AppTabBar :active="mainTab" @select="navigate" />
   </div>
 
-  <main v-if="view === 'editor'" class="editor-view" :class="{ 'crop-session': cropMode, 'inline-crop-session': inlineCropMode, 'keyboard-open': keyboardOpen }" @dragover.prevent @drop="dropFiles">
-    <header class="editor-header">
-      <template v-if="cropMode"><button class="text-button" @click="finishCrop(false)">取消</button><h1>全屏精修</h1><button class="text-button accent-text" @click="finishCrop(true)">完成</button></template>
-      <template v-else>
-        <button class="icon-button" aria-label="返回" :disabled="store.cropEditing" @click="navigate(mainTab)"><ArrowLeft :size="23" /></button>
-        <div class="editor-project"><input v-model="projectTitle" class="project-title" aria-label="作品名称" maxlength="80" :disabled="store.cropEditing" @focus="titleEditing = true" @blur="commitProjectTitle" @keydown.enter="event => { if (!event.isComposing) (event.target as HTMLInputElement).blur(); }" /><span class="save-status">{{ inlineCropMode ? '正在调整取景' : isSaving ? '正在保存草稿…' : textPending ? '正在准备文字…' : store.dirty || projectTitle !== store.project.title ? '等待自动保存' : '草稿已存本机' }}</span></div>
-        <div class="editor-header-actions"><button class="icon-button" aria-label="撤销" :disabled="!store.canUndo || store.cropEditing || !!busy || textPending" @click="store.undo()"><Undo2 :size="21" /></button><button class="icon-button" aria-label="重做" :disabled="!store.canRedo || store.cropEditing || !!busy || textPending" @click="store.redo()"><Redo2 :size="21" /></button><button class="primary-button" :disabled="store.cropEditing" @click="openExport()">导出<Download :size="17" /></button></div>
-      </template>
-    </header>
+  <main v-if="view === 'editor'" class="editor-view" :class="{ 'crop-session': cropMode, 'inline-crop-session': inlineCropMode, 'keyboard-open': keyboardOpen }" @pointerdown.capture="beginEditorInteraction" @focusin="revealHistory" @dragover.prevent @drop="dropFiles">
+    <header v-if="cropMode" class="editor-crop-header"><button class="text-button" @click="finishCrop(false)">取消</button><h1>全屏精修</h1><button class="text-button accent-text" @click="finishCrop(true)">完成</button></header>
+    <button v-else-if="!keyboardOpen" class="editor-back icon-button" aria-label="返回" :disabled="store.cropEditing" @click="navigate(mainTab)"><ArrowLeft :size="23" /></button>
+    <Transition name="history"><div v-if="historyVisible && (store.canUndo || store.canRedo) && !overlay && !store.cropEditing && !keyboardOpen" ref="historyControls" class="editor-history" role="group" aria-label="撤销和重做" @pointerenter="hoverHistory($event, true)" @pointerleave="hoverHistory($event, false)" @focusin="scheduleHistoryHide" @focusout="scheduleHistoryHide"><button class="icon-button" aria-label="撤销" aria-keyshortcuts="Control+Z Meta+Z" :disabled="!store.canUndo || !!busy || textPending" @click="store.undo()"><Undo2 :size="21" /></button><button class="icon-button" aria-label="重做" aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y" :disabled="!store.canRedo || !!busy || textPending" @click="store.redo()"><Redo2 :size="21" /></button></div></Transition>
     <div class="editor-body" :class="{ 'panel-open': dockOpen, 'text-open': dockOpen && panel === 'text' }">
       <section class="workspace">
         <div v-if="cropMode" class="canvas-topline"><span>拖动平移 · 双指缩放</span></div>
         <div class="canvas-stage"><EditorCanvas ref="canvas" :document="canvasDocument" :assets="store.assets" :selection="canvasSelection" :tool="tool" :brush-color="brushColor" :brush-size="brushSize" :brush-opacity="highlighter ? .4 : 1" :crop-mode="cropMode" :inline-crop-mode="inlineCropMode" :inline-disabled="inlineDisabled" :playing="playing" @select="select" @transform="store.transform" @crop="changeCanvasCrop" @inline-start="beginInlineCrop" @inline-end="endInlineCrop" @draw="draw" @request-asset="requestAsset" @edit-text="openText" @error="message => notify(message, true)"><CanvasCropPreview v-if="cropPreview !== 'off' && !cropMode" :width="doc.width" :height="doc.height" :ratio="Number(cropPreview)" /></EditorCanvas><button v-if="!photoCount && !doc.elements.length" class="canvas-empty-prompt" @click="managePhotos"><ImagePlus :size="27" /><strong>添加照片</strong></button></div>
-        <div v-if="inlineCropMode || swapFirst || store.selection" class="context-actions" :class="{ 'inline-crop-actions': inlineCropMode, 'has-selection': !!store.selection && !inlineCropMode }">
-          <template v-if="inlineCropMode && crop"><span class="selection-label">取景</span><button aria-label="缩小照片取景" @click="adjustCrop({ zoom: Math.max(MIN_CROP_ZOOM, crop.zoom - .2) })">−</button><span class="selection-label">{{ crop.zoom.toFixed(1) }}×</span><button aria-label="放大照片取景" @click="adjustCrop({ zoom: Math.min(MAX_CROP_ZOOM, crop.zoom + .2) })">+</button><button @click="finishCrop(false)">取消</button><button class="accent-text" @click="finishCrop(true)">完成</button></template>
-          <template v-else-if="swapFirst"><span class="selection-label">点另一张照片交换位置</span><button @click="swapFirst = null">取消交换</button></template>
-          <template v-else-if="store.selection">
-            <div class="context-scroll">
-            <button v-if="canAdjustPhoto" @click="store.selectedAsset?.kind === 'image' ? beginInlineCrop(store.selection, true) : beginCrop(store.selection)"><Move :size="16" />取景</button>
-            <button v-if="canAdjustPhoto" @click="openPhotoText"><Type :size="16" />加字</button>
-            <button v-if="hasImageSelection && !(store.selectedSlot ?? store.selected)?.locked" @click="uploadPhotos(true)"><ImagePlus :size="16" />替换</button>
-            <button v-if="canAdjustPhoto" aria-label="调整所选照片" @click="openPhotoAdjustments"><SlidersHorizontal :size="16" />调整</button>
-            <template v-if="store.selected?.type === 'text'"><button :disabled="store.selected.locked" @click="openText(store.selected.id)"><Type :size="16" />改文字</button><button @click="openPhotoText"><Palette :size="16" />字样</button></template>
-            <template v-if="store.selected?.type === 'shape'"><button @click="openShapeEditor"><Palette :size="16" />编辑形状</button><button :disabled="store.selected.locked" aria-label="删除所选形状，可撤销" @click="handleAction({ type: 'remove' })"><Trash2 :size="16" />删除</button></template>
-            <button aria-label="所选元素操作" @click="selectionActionsOpen = true"><MoreHorizontal :size="18" />操作</button>
-            </div>
-            <button class="selection-done" @click="store.select(null)">完成</button>
-          </template>
-        </div>
+        <nav v-if="store.selection && !dockOpen && !cropMode && !inlineCropMode && !swapFirst && !overlay && !busy" class="selection-toolbar" aria-label="所选元素工具">
+          <button aria-label="取消选择" @click="store.select(null)"><ArrowLeft :size="20" /></button>
+          <button v-if="canAdjustPhoto" @click="store.selectedAsset?.kind === 'image' ? beginInlineCrop(store.selection, true) : beginCrop(store.selection)"><Move :size="20" /><span>取景</span></button>
+          <button v-if="hasImageSelection && !(store.selectedSlot ?? store.selected)?.locked" @click="uploadPhotos(true)"><ImagePlus :size="20" /><span>替换</span></button>
+          <template v-if="store.selected?.type === 'text'"><button :disabled="store.selected.locked" @click="openText(store.selected.id)"><Type :size="20" /><span>改字</span></button><button @click="openPhotoText"><Palette :size="20" /><span>字样</span></button></template>
+          <template v-if="store.selected?.type === 'shape'"><button @click="openShapeEditor"><Palette :size="20" /><span>编辑</span></button><button :disabled="store.selected.locked" aria-label="删除所选形状，可撤销" @click="handleAction({ type: 'remove' })"><Trash2 :size="20" /><span>删除</span></button></template>
+          <button aria-label="所选元素操作" aria-haspopup="dialog" @click="selectionActionsOpen = true"><MoreHorizontal :size="20" /><span>更多</span></button>
+        </nav>
         <p v-if="tool !== 'select'" class="canvas-caption">在画布上绘制</p>
         <p v-if="cropPreview !== 'off' && !cropMode" class="crop-preview-note">模拟居中裁切，不参与导出；不同微信入口的裁切规则不同，以实际界面为准。</p>
       </section>
       <Transition name="dock">
-        <EditorToolDock :open="dockOpen" :title="advancedOpen && panel === 'photos' ? '照片精细调整' : panelTitle" :text="panel === 'text'" :disabled="store.cropEditing" :keyboard-open="keyboardOpen" :focus-key="panel === 'layers' && store.selection ? `${store.selection.kind}:${store.selection.id}` : undefined" @close="panelOpen = false; advancedOpen = false">
-          <div v-if="!advancedOpen && ['layouts', 'spacing', 'looks'].includes(panel)" class="dock-shortcuts" role="group" aria-label="排版与样式"><button :aria-pressed="panel === 'layouts'" @click="panel = 'layouts'">构图</button><button :aria-pressed="panel === 'spacing'" @click="panel = 'spacing'">留白圆角</button><button :aria-pressed="panel === 'looks'" @click="panel = 'looks'">照片风格</button></div>
+        <EditorToolDock v-model:expanded="dockExpanded" v-slot="{ expanded, collapsible }" :open="dockOpen" :title="advancedOpen && panel === 'photos' ? '照片精细调整' : panelTitle" :text="panel === 'text'" :disabled="store.cropEditing" :keyboard-open="keyboardOpen" @close="closePanel">
           <PhotoTextTools ref="photoTextTools" v-show="panel === 'text' && !advancedOpen" v-model:draft="textDraft" :pending="textPending" :document="doc" :assets="store.assets" :selection="store.selection" @action="handleAction" />
           <template v-if="!advancedOpen">
-            <div v-if="panel === 'photos'" class="dock-shortcuts"><button :disabled="!photoCount" @click="openPhotoAdjustments"><SlidersHorizontal :size="17" />精细调整所选照片</button></div>
             <label v-if="panel === 'background'" class="form-row">社交裁切预览<AppSelect :value="cropPreview" :options="cropPreviewOptions" label="微信裁切预览" @change="value => cropPreview = String(value)" /></label>
-            <CollageTools v-if="panel !== 'text' && compactPanels[panel]" :panel="panel" :document="doc" :assets="store.assets" :selection="store.selection" @action="handleAction" @manage-photos="managePhotos" @crop="beginCrop" @browse="value => designBrowser = value" />
+            <CollageTools v-if="panel !== 'text' && compactPanels[panel]" :panel="panel" :expanded="expanded" :collapsible="collapsible" :document="doc" :assets="store.assets" :selection="store.selection" @action="handleAction" @manage-photos="managePhotos" @crop="beginCrop" @browse="browseDesigns" @compact="dockExpanded = false" />
           </template>
           <template v-else>
             <div v-if="panel === 'photos' && placedPhotos.length" class="adjustment-photos" aria-label="选择要调整的照片"><button v-for="(photo, index) in placedPhotos" :key="photo.id" :aria-label="`调整第 ${index + 1} 张照片`" :aria-pressed="store.selection?.id === photo.id" @click="store.select(photoTarget(photo.id))"><img :src="photo.asset.thumbnail || photo.asset.src" alt="" /><span>{{ index + 1 }}</span></button></div>
@@ -1359,7 +1455,20 @@ onBeforeUnmount(() => {
           </template>
         </EditorToolDock>
       </Transition>
-      <nav v-if="!cropMode" class="tools-nav" :class="{ 'has-active': dockOpen || moreOpen }" aria-label="拼图工具" :style="{ '--tool-count': toolItems.length + 1, '--tool-index': activeToolIndex }"><button v-for="item in toolItems" :key="item.id" class="tool-button" :class="{ active: (panel === item.id || item.id === 'looks' && panel === 'spacing') && dockOpen }" :data-tool="item.id" :aria-pressed="(panel === item.id || item.id === 'looks' && panel === 'spacing') && dockOpen" :disabled="store.cropEditing || !!busy || textPending" @click="choosePanel(item.id)"><span class="tool-icon"><component :is="item.icon" :size="23" /></span>{{ item.label }}</button><button class="tool-button" :class="{ active: moreOpen || (dockOpen && toolIndex < 0) }" data-tool="more" aria-haspopup="dialog" :disabled="store.cropEditing || !!busy || textPending" @click="moreOpen = true"><span class="tool-icon"><MoreHorizontal :size="24" /></span>工具</button></nav>
+      <footer v-if="!cropMode" class="editor-footer" aria-label="编辑操作">
+        <div v-if="inlineCropMode && crop" class="editor-context inline-crop-actions" aria-label="照片取景操作">
+          <button class="tool-button" @click="finishCrop(false)"><span class="tool-icon"><ArrowLeft :size="22" /></span>取消</button>
+          <button class="tool-button" aria-label="缩小照片取景" @click="adjustCrop({ zoom: Math.max(MIN_CROP_ZOOM, crop.zoom - .2) })"><span class="tool-icon">−</span>缩小</button>
+          <span class="crop-scale">{{ crop.zoom.toFixed(1) }}×</span>
+          <button class="tool-button" aria-label="放大照片取景" @click="adjustCrop({ zoom: Math.min(MAX_CROP_ZOOM, crop.zoom + .2) })"><span class="tool-icon">+</span>放大</button>
+        </div>
+        <div v-else-if="swapFirst" class="editor-context swap-actions"><button class="tool-button" @click="swapFirst = null"><span class="tool-icon"><ArrowLeft :size="22" /></span>取消</button><span>点另一张照片交换位置</span></div>
+        <nav v-else class="tools-nav" aria-label="拼图工具">
+          <button v-for="item in toolItems" :key="item.id" class="tool-button" :class="{ active: (panel === item.id || item.id === 'layouts' && (panel === 'looks' || panel === 'spacing')) && dockOpen }" :data-tool="item.id" :aria-pressed="(panel === item.id || item.id === 'layouts' && (panel === 'looks' || panel === 'spacing')) && dockOpen" :disabled="store.cropEditing || !!busy || textPending" @click="choosePanel(item.id)"><span class="tool-icon"><component :is="item.icon" :size="23" /></span>{{ item.label }}</button>
+          <button class="tool-button" :class="{ active: moreOpen || (dockOpen && toolIndex < 0) }" data-tool="more" aria-haspopup="dialog" :disabled="store.cropEditing || !!busy || textPending" @click="moreOpen = true"><span class="tool-icon"><MoreHorizontal :size="24" /></span>工具</button>
+        </nav>
+        <button class="editor-primary-action" :disabled="!!busy || textPending || !!swapFirst" @click="inlineCropMode ? finishCrop(true) : openExport()"><CheckCircle2 v-if="inlineCropMode" :size="20" /><Download v-else :size="20" /><span>{{ inlineCropMode ? '完成取景' : '导出' }}</span></button>
+      </footer>
       <section v-else-if="crop" class="crop-controls" aria-label="照片裁切工具"><PanelRange label="照片缩放" :value="crop.zoom" :min="MIN_CROP_ZOOM" :max="MAX_CROP_ZOOM" :step=".01" unit="×" @input="zoom => adjustCrop({ zoom })" /><div class="crop-actions"><button @click="adjustCrop({ rotation: (crop.rotation + 450) % 360 - 180 })"><RotateCcw :size="22" />左转</button><button @click="adjustCrop({ rotation: (crop.rotation + 630) % 360 - 180 })"><RotateCw :size="22" />右转</button><button :aria-pressed="crop.flipX" @click="adjustCrop({ flipX: !crop.flipX })"><FlipHorizontal :size="22" />翻转</button><button :aria-pressed="crop.flipY" @click="adjustCrop({ flipY: !crop.flipY })"><FlipVertical :size="22" />上下</button><button @click="adjustCrop(createCrop())"><Undo2 :size="22" />重置</button></div></section>
     </div>
     <audio v-if="musicAsset" ref="musicPlayer" :src="musicAsset.src" preload="auto" @loadedmetadata="syncMusic" @timeupdate="musicTimeUpdate" @ended="() => { if (musicPlayer && playing) { musicPlayer.currentTime = doc.audio?.start ?? 0; void musicPlayer.play(); } }" />
@@ -1367,6 +1476,8 @@ onBeforeUnmount(() => {
 
   <AppDialog v-model:open="selectionActionsOpen" :title="selectedPhotoNumber ? `照片 ${selectedPhotoNumber}` : store.selected?.type === 'text' ? '文字操作' : '元素操作'">
     <div v-if="store.selection" class="selection-action-list">
+      <button v-if="canAdjustPhoto" @click="selectionAction(openPhotoAdjustments)"><SlidersHorizontal :size="21" /><span>调整照片 · 滤镜与色彩</span></button>
+      <button v-if="canAdjustPhoto" @click="selectionAction(openPhotoText)"><Type :size="21" /><span>在照片上加字</span></button>
       <button v-if="canAdjustPhoto" @click="selectionAction(() => { if (store.selection) beginCrop(store.selection); })"><Maximize2 :size="21" /><span>全屏精修</span></button>
       <button v-if="hasImageSelection && !(store.selectedSlot ?? store.selected)?.locked" @click="selectionAction(() => uploadPhotos(true))"><ImagePlus :size="21" /><span>替换照片</span></button>
       <button v-if="canAdjustPhoto && store.selectedSlot && photoCount > 1" @click="selectionAction(() => handleAction({ type: 'swap' }))"><Rows3 :size="21" /><span>交换照片位置</span></button>
@@ -1392,14 +1503,8 @@ onBeforeUnmount(() => {
     <p class="form-note">预览使用你的照片。应用后可编辑文字与装饰；未添加的文案仍保留在本页草稿中。</p>
     <template #footer><div class="dialog-actions"><button class="secondary-button" @click="pendingDesign = null">取消</button><button class="primary-button" @click="confirmDesign">确认替换并应用</button></div></template>
   </AppDialog>
-  <AppDialog v-model:open="designBrowserOpen" :title="designBrowser === 'layouts' ? '挑选构图' : '挑选照片风格'" :description="designBrowser === 'layouts' ? '用你的照片看主次、比例与留白。点选后立即应用。' : '相纸、拍立得、胶片与画廊留白。保留照片的裁剪与摆放。'" wide>
-    <div class="design-browser-content">
-      <LayoutGallery v-if="designBrowser === 'layouts'" :count="designPhotos.length" :document="doc" :assets="store.assets" :selected-id="doc.mode === 'grid' ? doc.layoutId : undefined" :preview-photos="designPhotos" @select="layout => handleAction({ type: 'layout', layout })" />
-      <CollageStyleGallery v-else-if="designBrowser === 'looks'" :document="doc" :assets="store.assets" @select="look => handleAction({ type: 'look', look })" />
-    </div>
-    <template #footer><div class="design-browser-actions"><span>点选即生效 · 可撤销</span><button class="primary-button" @click="designBrowser = null">回到画布</button></div></template>
-  </AppDialog>
   <AppDialog v-model:open="moreOpen" title="工具与作品">
+    <label class="editor-project"><span class="field-label">作品名称</span><input v-model="projectTitle" class="project-title" aria-label="作品名称" maxlength="80" :disabled="store.cropEditing" @focus="titleEditing = true" @blur="commitProjectTitle" @keydown.enter="event => { if (!event.isComposing) (event.target as HTMLInputElement).blur(); }" /><span class="save-status">{{ isSaving ? '正在保存草稿…' : textPending ? '正在准备文字…' : store.dirty || projectTitle !== store.project.title ? '等待自动保存' : '草稿已存本机' }}</span></label>
     <h3 class="more-section-title">装饰与高级工具</h3>
     <div class="extra-tools"><button v-for="item in extraTools" :key="item.id" @click="choosePanel(item.id)"><component :is="item.icon" :size="22" /><span>{{ item.label }}</span><ChevronRight :size="17" /></button><button @click="openPhotoAdjustments"><SlidersHorizontal :size="22" /><span>照片高级调整</span><ChevronRight :size="17" /></button><button @click="moreOpen = false; panel = 'background'; panelOpen = false; advancedOpen = true"><Palette :size="22" /><span>背景与纹理</span><ChevronRight :size="17" /></button></div>
     <h3 class="more-section-title">作品管理</h3>
@@ -1422,12 +1527,12 @@ onBeforeUnmount(() => {
       <img v-else-if="exportResult?.blob.type.startsWith('image/') || exportPreview" :src="exportResult?.blob.type.startsWith('image/') ? exportResult.url : exportPreview" :alt="`${store.project.title}导出预览`" />
     </div>
     <p v-if="!isAnimatedExport && store.project.pages.length > 1" class="form-note">这份历史作品包含 {{ store.project.pages.length }} 张图片，导出会生成全部图片并打包为 ZIP，不会只导出当前图片。</p>
-    <div class="export-options"><div class="option-heading"><span>格式</span><small>{{ exportFormat === 'png' ? '无损 · 支持透明' : exportFormat === 'jpeg' ? '适合照片分享' : exportFormat === 'webp' ? '轻量 · 支持透明' : '动态作品' }}</small></div><div class="segmented-control" aria-label="图片格式"><button v-for="format in exportFormats" :key="format.value" :aria-pressed="exportFormat === format.value" @click="exportFormat = format.value; clearExportResult()">{{ format.label }}</button></div><div class="option-heading"><span>清晰度</span><small>{{ exportDimensions }}</small></div><div class="segmented-control" aria-label="图片清晰度"><button v-for="size in exportSizes" :key="size.value" :disabled="size.value > maxExportScale" :aria-pressed="exportScale === size.value" @click="exportScale = size.value; clearExportResult()">{{ size.label }}<small>{{ size.value }}×</small></button></div></div>
+    <div class="export-options"><div class="option-heading"><span>格式</span><small>{{ exportFormat === 'png' ? '无损 · 支持透明' : exportFormat === 'jpeg' ? '适合照片分享' : exportFormat === 'webp' ? '轻量 · 支持透明' : '动态作品' }}</small></div><div class="segmented-control" aria-label="图片格式"><button v-for="format in exportFormats" :key="format.value" :aria-pressed="exportFormat === format.value" @click="exportFormat = format.value; clearExportResult()">{{ format.label }}</button></div><div class="option-heading"><span>清晰度</span><small>{{ exportDimensions }}</small></div><div class="segmented-control" aria-label="图片清晰度"><button v-for="size in exportSizes" :key="size.value" :disabled="size.value > maxExportScale" :aria-pressed="exportScale === size.value" @click="setExportScale(size.value); clearExportResult()">{{ size.label }}<small>{{ size.value }}×</small></button></div></div>
     <label v-if="exportFormat === 'jpeg' || exportFormat === 'webp'" class="form-row">图片画质<AppSelect :value="staticExportQuality" :options="[{ value: .75, label: '节省空间' }, { value: .94, label: '高画质' }, { value: 1, label: '最高画质' }]" label="静态图片画质" @change="value => { staticExportQuality = Number(value); clearExportResult(); }" /></label>
     <p v-if="maxExportScale < 2" class="form-note">当前尺寸接近导出上限：最长边 8192 像素、总计 6400 万像素。请降低导出清晰度或调整画布尺寸。</p>
     <details class="motion-export"><summary>动态图与视频</summary><label class="form-row">动态格式<AppSelect :value="exportFormat" :options="[{ value: 'png', label: '静态图片' }, { value: 'gif', label: 'GIF · 无声音' }, { value: 'mp4', label: 'MP4 · 视频' }, { value: 'webm', label: 'WebM · 视频' }]" label="动态导出格式" @change="value => { exportFormat = value as ExportOptions['format']; clearExportResult(); }" /></label><div v-if="isAnimatedExport" class="form-columns"><label class="form-row">帧率<AppSelect :value="exportFps" :options="[8, 12, 24, 30].map(value => ({ value, label: `${value} fps` }))" label="导出帧率" @change="value => { exportFps = Number(value); clearExportResult(); }" /></label><label class="form-row">画质<AppSelect :value="motionExportQuality" :options="[{ value: .75, label: '节省空间' }, { value: .94, label: '高画质' }, { value: 1, label: '最高画质' }]" label="导出画质" @change="value => { motionExportQuality = Number(value); clearExportResult(); }" /></label></div><label v-if="isAnimatedExport && store.project.pages.length > 1" class="check-row"><input v-model="exportAllPages" type="checkbox" @change="clearExportResult" />合成全部 {{ store.project.pages.length }} 页</label><p class="form-note">视频保留音乐与原声；GIF 没有声音。编码不支持时会提示，不偷偷换格式。</p></details>
     <div class="dialog-actions secondary-export-actions"><button class="link-button" @click="saveProjectFile">导出项目备份</button></div>
-    <template #footer><div class="export-save-actions"><button class="primary-button" :disabled="exportPreviewLoading || !!busy" @click="saveImage"><Download :size="20" />{{ isAnimatedExport ? nativeApp ? '保存动态作品' : '下载动态作品' : store.project.pages.length > 1 ? `${nativeApp ? '保存' : '下载'} ${store.project.pages.length} 张图片` : nativeApp ? '保存到文件' : '下载图片' }}</button><button v-if="shareAvailable" class="secondary-button" :disabled="exportPreviewLoading || !!busy || !!exportResult && !canShareResult" @click="shareResult">{{ exportResult ? '系统分享' : '准备分享' }}</button><p class="export-save-hint">{{ !isAnimatedExport && store.project.pages.length > 1 ? '以 ZIP 保存全部图片，解压后即可逐张查看或分享；项目备份仍保留全部原始素材。' : nativeApp ? '保存到系统文件位置，不会自动写入相册；继续编辑请另存项目备份。' : isAnimatedExport ? '生成后下载到浏览器下载列表；支持的平台也可直接系统分享。' : '下载生成高清图片；手机长按保存请在文件生成后进行，避免保存低清预览。' }}</p><p v-if="shareAvailable && exportResult && !canShareResult" class="export-save-hint">系统不支持分享此文件，请下载后从系统文件应用分享。</p></div></template>
+    <template #footer><div class="export-save-actions"><button class="primary-button" :disabled="exportPreviewLoading || !!busy" @click="saveImage"><Download :size="20" />{{ isAnimatedExport ? nativeApp ? '保存动态作品' : '下载动态作品' : store.project.pages.length > 1 ? `${nativeApp ? '保存' : '下载'} ${store.project.pages.length} 张图片` : nativeApp ? '保存到文件' : '下载图片' }}</button><button v-if="shareAvailable" class="secondary-button" :disabled="exportPreviewLoading || !!busy || !!exportResult && !canShareResult" @click="shareResult">{{ exportResult ? '系统分享' : '准备分享' }}</button><p class="export-save-hint" role="status" aria-live="polite">{{ exportSaveHint }}</p><p v-if="shareAvailable && exportResult && !canShareResult" class="export-save-hint">系统不支持分享此文件，请下载后从系统文件应用分享。</p></div></template>
   </AppDialog>
   <AppDialog v-model:open="sizeOpen" title="自定义画布" :description="doc.layoutId.startsWith('long-') ? '高度按照片比例自动计算；调整宽度会保留留白与相框。' : '改变尺寸时，照片与文字会按比例调整。'">
     <div class="form-columns size-fields">
@@ -1436,7 +1541,7 @@ onBeforeUnmount(() => {
     </div>
     <template #footer><div class="dialog-actions"><button class="primary-button" @click="applySize">应用尺寸</button></div></template>
   </AppDialog>
-  <AppDialog v-model:open="textOpen" title="写在照片上" description="支持多行；完成后可以拖动摆放，或在文字工具中调整字样。"><label class="form-row">文字内容<textarea v-model="textValue" maxlength="2000" aria-label="编辑文字内容" /></label><template #footer><div class="dialog-actions text-edit-actions"><button class="secondary-button" @click="textOpen = false">取消</button><button class="primary-button" @click="applyText">完成</button></div></template></AppDialog>
+  <AppDialog v-model:open="textOpen" title="写在照片上" description="支持多行；完成后可以拖动摆放，或在文字工具中调整字样。" @open-auto-focus="focusTextInput"><label class="form-row">文字内容<textarea ref="textInput" v-model="textValue" maxlength="2000" aria-label="编辑文字内容" /></label><template #footer><div class="dialog-actions text-edit-actions"><button class="secondary-button" @click="textOpen = false">取消</button><button class="primary-button" @click="applyText">完成</button></div></template></AppDialog>
   <AppDialog v-model:open="deleteDraftOpen" :title="`删除选中的 ${pendingDraftIds.length} 份作品？`" description="会删除这些作品在当前浏览器中的草稿与原始素材副本，其他作品和已导出的项目文件不受影响。"><template #footer><div class="dialog-actions"><button class="secondary-button" :disabled="!!busy" @click="deleteDraftOpen = false">保留</button><button class="danger-button" :disabled="!!busy || !pendingDraftIds.length" @click="removeDrafts">删除 {{ pendingDraftIds.length }} 份作品</button></div></template></AppDialog>
   <AppDialog v-model:open="deletePageOpen" title="删除当前页面？" description="其他页面和素材库会保留。此操作可通过撤销恢复。"><template #footer><div class="dialog-actions"><button class="secondary-button" @click="deletePageOpen = false">保留</button><button class="danger-button" @click="deletePage">删除页面</button></div></template></AppDialog>
   <AppDialog :open="!!busy" :title="busy" description="操作在设备本地执行。处理大文件时请保持页面打开。" locked>

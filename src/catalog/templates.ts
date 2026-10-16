@@ -2,6 +2,8 @@ import { createDrawing, createElementBase } from '../defaults';
 import type { AnimationKind, BackgroundSpec, DrawingElement, SceneElement, ShapeElement, TemplatePreset, TextElement } from '../types';
 import { chineseFonts } from './photoText';
 import { layouts } from './layouts';
+import { designerPosterDesigns } from './designerPosters';
+import { createPhotoPoster } from './posterDesign';
 
 const SQUARE = [1080, 1080] as const;
 const PORTRAIT = [1080, 1440] as const;
@@ -97,9 +99,10 @@ export const chineseFestivals: readonly { id: string; label: string; templateIds
   { id: 'new-years-day', label: '元旦', templateIds: ['festival-new-year'] },
 ];
 
-export const templateCategories = ['全部', '节日', '佛教道场', '照片集', '极简', '胶片', '拍立得', '手帐', '生日', '旅行', '杂志', '动态'];
+export const templateCategories = ['全部', '节日', '佛教道场', '照片集', '极简', '胶片', '拍立得', '手帐', '生日', '旅行', '杂志', '生活', '应援', '运动', '纪念', '动态'];
 
 export const templates: TemplatePreset[] = [
+  ...designerPosterDesigns.map(design => createPhotoPoster(design, 3)),
   make('festival-spring-reunion', '春节 · 团圆有福', '节日', '3 张照片紧密相连。朱红与暖金写下春节的团圆，家人、年夜饭与新春心愿都值得珍藏。', PORTRAIT, '#9a2926',
     [frame(0, 0, .62, 1), frame(.62, 0, .38, .5), frame(.62, .5, .38, .5)],
     [shape(0, 1110, 1080, 330, '#8b2026', { opacity: .93 }), line([56, 1150, 1024, 1150], '#e9c88c', 2),

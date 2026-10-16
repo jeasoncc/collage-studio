@@ -1,31 +1,12 @@
-import type { SceneElement, ShapeElement, TemplatePreset, TextElement } from '../types';
+import type { SceneElement, TemplatePreset } from '../types';
 import { chineseFonts } from './photoText';
 import { MAX_COLLAGE_PHOTOS } from './layouts';
+import { WIDTH, HEIGHT, contactGrid, createPhotoPoster, posterElements } from './posterDesign';
+import { designerPosterDesigns } from './designerPosters';
 
 type Frame = NonNullable<TemplatePreset['photoFrames']>[number];
-type PosterStyle = 'cinema' | 'fashion' | 'support' | 'calligraphy' | 'memory'
-  | 'dharma' | 'vesak' | 'practice' | 'lamps' | 'retreat' | 'celebration';
-const WIDTH = 1080;
-const HEIGHT = 1350;
-const elementDefaults = { rotation: 0, opacity: 1, locked: false, visible: true, animation: 'none' as const, shadow: 0 };
-
-// Partition a complete rectangle, not a set of inset cards. Adjacent cells use
-// the same boundaries, and balanced rows leave no empty slots at any count.
-function contactGrid(count: number, region: Frame): Frame[] {
-  const rows = Math.max(1, Math.min(count, Math.round(Math.sqrt(count * region.height * HEIGHT / (region.width * WIDTH)))));
-  const frames: Frame[] = [];
-  for (let row = 0; row < rows; row++) {
-    const columns = Math.floor(count / rows) + (row < count % rows ? 1 : 0);
-    const top = region.y + region.height * row / rows;
-    const bottom = region.y + region.height * (row + 1) / rows;
-    for (let column = 0; column < columns; column++) {
-      const left = region.x + region.width * column / columns;
-      const right = region.x + region.width * (column + 1) / columns;
-      frames.push({ x: left, y: top, width: right - left, height: bottom - top });
-    }
-  }
-  return frames;
-}
+const posterStyles = ['cinema', 'fashion', 'support', 'calligraphy', 'memory', 'dharma', 'vesak', 'practice', 'lamps', 'retreat', 'celebration'] as const;
+type PosterStyle = typeof posterStyles[number];
 
 // The array order is the source order: frame zero is always the dominant photo.
 // Every branch tiles the full canvas exactly once, including small collections.
@@ -119,16 +100,7 @@ function contactFrames(count: number, style: PosterStyle): Frame[] {
 
 function poster(count: number, style: PosterStyle): TemplatePreset {
   const id = `poster-${style}-${count}`;
-  const text = (key: string, value: string, x: number, y: number, width: number, fontSize: number, color: string, extra: Partial<TextElement> = {}): TextElement => ({
-    ...elementDefaults, id: `${id}-${key}`, type: 'text', x: x * WIDTH, y: y * HEIGHT, width: width * WIDTH,
-    height: fontSize * (extra.lineHeight ?? 1.2) * value.split('\n').length + fontSize * .2,
-    text: value, fontFamily: chineseFonts.sans, fontSize, fontStyle: 'normal', color, align: 'left', lineHeight: 1.2,
-    stroke: '', strokeWidth: 0, backgroundColor: 'transparent', curve: 0, ...extra,
-  });
-  const shape = (key: string, x: number, y: number, width: number, height: number, fill: string, extra: Partial<ShapeElement> = {}): ShapeElement => ({
-    ...elementDefaults, id: `${id}-${key}`, type: 'shape', x: x * WIDTH, y: y * HEIGHT, width: width * WIDTH, height: height * HEIGHT,
-    shape: 'rect', fill, stroke: '', strokeWidth: 0, ...extra,
-  });
+  const { text, shape } = posterElements(id);
   let name: string;
   let category: string;
   let description: string;
@@ -285,5 +257,9 @@ function poster(count: number, style: PosterStyle): TemplatePreset {
 /** Fresh editable presets for the complete current photo collection; unsupported counts have no presets. */
 export function photoPostersForCount(count: number): TemplatePreset[] {
   if (!Number.isInteger(count) || count < 1 || count > MAX_COLLAGE_PHOTOS) return [];
-  return (['cinema', 'fashion', 'support', 'calligraphy', 'memory', 'dharma', 'vesak', 'practice', 'lamps', 'retreat', 'celebration'] as const).map(style => poster(count, style));
+  const presets = designerPosterDesigns.map(design => createPhotoPoster(design, count));
+  for (const style of posterStyles) {
+    presets.push(poster(count, style));
+  }
+  return presets;
 }

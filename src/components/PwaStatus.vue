@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { AlertCircle, CheckCircle2, Download, Info, LoaderCircle, RefreshCw, WifiOff } from 'lucide-vue-next';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { AlertCircle, CheckCircle2, Download, Info, LoaderCircle, RefreshCw, WifiOff, X } from 'lucide-vue-next';
 import AppDialog from './AppDialog.vue';
 import { usePwa, type PwaStatusHandle } from '../services/pwa';
 import { isNativeApp } from '../services/native';
@@ -8,10 +8,18 @@ import { isNativeApp } from '../services/native';
 const props = defineProps<{ allowUpdate: boolean }>();
 const installHelpOpen = ref(false);
 const installActionPending = ref(false);
-const updateDeferred = ref(false);
+const updateDeferred = ref(true);
+const manualChecking = ref(false);
+const unexpectedError = ref('');
+const dismissedFailure = ref('');
+const notice = ref<{ message: string; success: boolean } | null>(null);
+let noticeTimer: number | undefined;
+let noticeVersion = 0;
+let checkVersion = 0;
+let disposed = false;
 const safeToUpdate = computed(() => props.allowUpdate && !installHelpOpen.value && !installActionPending.value);
 const { state, promptInstall, retryPreparation, checkForUpdates, applyUpdate } = usePwa(() => safeToUpdate.value);
-defineExpose<PwaStatusHandle>({ state, checkForUpdates: () => checkForUpdates(true, true) });
+defineExpose<PwaStatusHandle>({ state, checkForUpdates: manualCheck });
 const native = isNativeApp();
 const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 const isAndroid = /Android/.test(navigator.userAgent);
@@ -24,9 +32,101 @@ const summary = computed(() => {
 });
 const statusIcon = computed(() => native ? CheckCircle2 : !state.online ? WifiOff : state.preparation === 'ready' ? CheckCircle2
   : state.preparation === 'preparing' ? LoaderCircle : state.preparation === 'error' ? AlertCircle : Info);
-const failure = computed(() => state.preparationError || state.updateError || state.installError);
+const failure = computed(() => [...new Set([state.preparationError, state.updateError, state.installError, unexpectedError.value].filter(Boolean))].join(' '));
+const visibleFailure = computed(() => failure.value !== dismissedFailure.value ? failure.value : '');
+const busy = computed(() => manualChecking.value || state.updatePending);
+const updateReady = computed(() => state.waitingUpdate && !updateDeferred.value);
+const toastMessage = computed(() => {
+  if (state.updatePending) return state.updateNotice || '正在启用更新…';
+  if (manualChecking.value) return '正在检查更新…';
+  if (visibleFailure.value) return visibleFailure.value;
+  if (updateReady.value) return '新版本已准备好';
+  return notice.value?.message || '';
+});
+const toastIcon = computed(() => busy.value ? LoaderCircle : visibleFailure.value ? AlertCircle : notice.value?.success && !updateReady.value ? CheckCircle2 : Info);
 
-watch(() => state.waitingUpdate, waiting => { if (!waiting) updateDeferred.value = false; });
+function clearNotice() {
+  window.clearTimeout(noticeTimer);
+  notice.value = null;
+  noticeVersion++;
+}
+
+function showNotice(message: string, success = false) {
+  clearNotice();
+  if (message) notice.value = { message, success };
+}
+
+watch(() => state.waitingUpdate, waiting => {
+  updateDeferred.value = !waiting || !manualChecking.value;
+  if (waiting) clearNotice();
+}, { flush: 'sync' });
+watch(() => state.updatePending, pending => { if (pending) clearNotice(); });
+watch(() => state.updateNotice, message => {
+  // The ready action is rendered from waitingUpdate, never as a second notice.
+  if (!message || (state.waitingUpdate && !state.updatePending)) return;
+  const latest = message === '当前已是最新版本。';
+  if (latest && manualChecking.value) return;
+  const preparing = state.preparation === 'preparing';
+  showNotice(
+    native ? state.unavailableReason : latest && preparing ? '更新检查已完成，离线资源仍在准备中。' : message,
+    latest && !preparing,
+  );
+}, { flush: 'sync' });
+watch(() => state.installNotice, message => { if (message) showNotice(message); }, { flush: 'sync' });
+watch(failure, () => { dismissedFailure.value = ''; });
+watch([notice, busy, visibleFailure, updateReady], () => {
+  window.clearTimeout(noticeTimer);
+  if (!notice.value?.success || busy.value || visibleFailure.value || updateReady.value) return;
+  const current = notice.value;
+  noticeTimer = window.setTimeout(() => {
+    if (!disposed && notice.value === current && !busy.value) clearNotice();
+  }, 3000);
+});
+
+async function manualCheck(): Promise<void> {
+  const request = ++checkVersion;
+  manualChecking.value = true;
+  unexpectedError.value = '';
+  dismissedFailure.value = '';
+  clearNotice();
+  const previousNoticeVersion = noticeVersion;
+  try {
+    await checkForUpdates(true, true);
+  } catch (error) {
+    if (!disposed && request === checkVersion) unexpectedError.value = error instanceof Error ? error.message : '检查更新失败，请稍后重试。';
+  } finally {
+    if (!disposed && request === checkVersion) {
+      manualChecking.value = false;
+      if (state.waitingUpdate) updateDeferred.value = false;
+      else if (!failure.value && !state.updatePending && noticeVersion === previousNoticeVersion) {
+        const preparing = state.preparation === 'preparing';
+        const latest = state.available && !preparing && (!state.updateNotice || state.updateNotice === '当前已是最新版本。');
+        showNotice(
+          native ? state.unavailableReason : preparing ? '更新检查已完成，离线资源仍在准备中。' : state.updateNotice || (latest ? '当前已是最新版本。' : '更新检查已完成。'),
+          latest,
+        );
+      }
+    }
+  }
+}
+
+function dismissToast() {
+  if (busy.value) return;
+  dismissedFailure.value = failure.value;
+  updateDeferred.value = true;
+  clearNotice();
+}
+
+function showUpdate() {
+  clearNotice();
+  updateDeferred.value = false;
+}
+
+onBeforeUnmount(() => {
+  disposed = true;
+  checkVersion++;
+  window.clearTimeout(noticeTimer);
+});
 
 async function install() {
   if (installActionPending.value || state.installed) return;
@@ -57,20 +157,31 @@ function update() {
       </div>
       <div class="pwa-actions">
         <button v-if="state.available && !state.installed" type="button" class="quiet-button pwa-control" data-pwa-action="install" :disabled="state.installPending || installActionPending" @click="install"><Download :size="16" aria-hidden="true" />{{ state.installPending ? '等待浏览器…' : state.nativeInstallAvailable ? '安装应用' : '安装指引' }}</button>
-        <button v-if="state.preparation === 'error' || state.updateError" type="button" class="quiet-button pwa-control" data-pwa-action="retry" :disabled="state.checking || state.updatePending || !state.online" @click="retryPreparation"><RefreshCw :size="16" aria-hidden="true" />{{ state.checking ? '正在重试…' : '重试准备' }}</button>
-        <button v-if="state.waitingUpdate && updateDeferred" type="button" class="quiet-button pwa-control" data-pwa-action="show-update" :disabled="state.updatePending" @click="updateDeferred = false">查看更新</button>
+        <button v-if="state.preparation === 'error'" type="button" class="quiet-button pwa-control" data-pwa-action="retry" :disabled="state.checking || state.updatePending || !state.online" @click="retryPreparation"><RefreshCw :size="16" aria-hidden="true" />{{ state.checking ? '正在重试…' : '重试准备' }}</button>
+        <button v-if="state.waitingUpdate && updateDeferred" type="button" class="quiet-button pwa-control" data-pwa-action="show-update" :disabled="state.updatePending" @click="showUpdate">查看更新</button>
       </div>
     </div>
-    <div v-if="state.waitingUpdate && !updateDeferred" class="pwa-update" data-pwa-update>
-      <span>新版本已准备好<span v-if="!safeToUpdate" class="pwa-update-hint">。请先保存作品、处理待添加文案并关闭弹窗，返回主页后更新。</span></span>
-      <div class="pwa-actions">
-        <button type="button" class="primary-button pwa-control" data-pwa-action="update" :disabled="!safeToUpdate || state.updatePending" @click="update"><RefreshCw :size="16" aria-hidden="true" />{{ state.updatePending ? '启用中…' : '更新并刷新' }}</button>
-        <button type="button" class="quiet-button pwa-control" data-pwa-action="later" :disabled="state.updatePending" @click="updateDeferred = true">稍后更新</button>
-      </div>
-    </div>
-    <p v-if="failure" class="pwa-notice pwa-error" role="status" data-pwa-error>{{ failure }}</p>
-    <p v-else-if="state.updateNotice || state.installNotice" class="pwa-notice" role="status" data-pwa-notice>{{ state.updateNotice || state.installNotice }}</p>
   </section>
+
+  <Teleport to="body">
+    <aside v-if="toastMessage" class="toast pwa-toast" :class="{ error: !!visibleFailure && !busy }" aria-label="应用更新与安装" data-pwa-toast>
+      <div class="pwa-toast-content" role="status" aria-live="polite" aria-atomic="true" :data-pwa-error="visibleFailure && !busy ? '' : undefined" :data-pwa-notice="!visibleFailure && !busy ? '' : undefined">
+        <component :is="toastIcon" :size="20" :class="{ spinning: busy }" aria-hidden="true" />
+        <div>
+          <p>{{ toastMessage }}</p>
+          <p v-if="updateReady && !safeToUpdate && !busy" class="pwa-update-hint">请先保存作品、处理待添加文案并关闭弹窗，返回主页后更新。</p>
+        </div>
+      </div>
+      <div v-if="updateReady && !busy" class="pwa-actions" data-pwa-update>
+        <button type="button" class="pwa-toast-button pwa-control" data-pwa-action="update" :disabled="!safeToUpdate" @click="update"><RefreshCw :size="16" aria-hidden="true" />更新并刷新</button>
+        <button type="button" class="pwa-toast-button pwa-control" data-pwa-action="later" @click="updateDeferred = true">稍后</button>
+      </div>
+      <div v-else-if="state.updateError && visibleFailure === state.updateError && !busy" class="pwa-actions">
+        <button type="button" class="pwa-toast-button pwa-control" data-pwa-action="retry-update" @click="manualCheck"><RefreshCw :size="16" aria-hidden="true" />重试检查</button>
+      </div>
+      <button v-if="!busy" type="button" class="pwa-toast-dismiss pwa-control" aria-label="关闭更新与安装提示" data-pwa-action="dismiss-notice" @click="dismissToast"><X :size="18" aria-hidden="true" /></button>
+    </aside>
+  </Teleport>
 
   <AppDialog v-model:open="installHelpOpen" title="安装拼贴时光" description="浏览器决定是否支持安装。添加图标不代表离线资源已准备完成。">
     <div class="pwa-install-help" data-pwa-install-help>
@@ -96,7 +207,7 @@ function update() {
 
 <style scoped>
 .pwa-status { flex: 0 0 auto; width: 100%; min-width: 0; max-width: 1064px; box-sizing: border-box; margin: 0 auto; padding: 0 32px 4px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-.pwa-status-row, .pwa-update { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; min-width: 0; }
+.pwa-status-row { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; min-width: 0; }
 .pwa-summary { flex: 1 1 160px; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 44px; line-height: 1.6; }
 .pwa-summary svg { flex: none; }
 .pwa-summary svg, .pwa-installed { color: var(--accent); }
@@ -105,9 +216,16 @@ function update() {
 .pwa-control { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border-radius: var(--radius-control); font-size: 12px; padding: 10px 12px; white-space: normal; }
 .pwa-control:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .pwa-control:disabled { opacity: .5; cursor: not-allowed; }
-.pwa-update { margin-top: 6px; padding: 12px; border-radius: var(--radius-control); background: var(--accent-soft); color: var(--accent); line-height: 1.7; }
-.pwa-update>span { flex: 1 1 220px; min-width: 0; }
-.pwa-update-hint { color: var(--muted); }
+.pwa-toast { top: calc(var(--visible-top, 0px) + max(16px, env(safe-area-inset-top)) + 72px); right: max(16px, env(safe-area-inset-right)); left: auto; transform: none; z-index: 90; box-sizing: border-box; width: min(420px, calc(100vw - 32px)); max-height: calc(var(--visible-height, 100dvh) - 120px); overflow-y: auto; flex-direction: column; align-items: stretch; gap: 10px; padding-right: 56px; pointer-events: auto; }
+.pwa-toast-content { display: flex; align-items: flex-start; gap: 10px; min-width: 0; overflow-wrap: anywhere; }
+.pwa-toast-content > svg { flex: none; margin-top: 2px; }
+.pwa-toast-content p { margin: 0; }
+.pwa-toast-content p + p { margin-top: 6px; }
+.pwa-update-hint { opacity: .85; font-size: 12px; }
+.pwa-toast-button, .pwa-toast-dismiss { color: inherit; background: transparent; border: 1px solid #ffffff66; }
+.pwa-toast-button:hover:not(:disabled), .pwa-toast-dismiss:hover { background: #ffffff1a; }
+.pwa-toast-button:focus-visible, .pwa-toast-dismiss:focus-visible { outline-color: white; }
+.pwa-toast-dismiss { position: absolute; top: 4px; right: 4px; padding: 8px; border: 0; }
 .pwa-notice { margin: 2px 0 8px; line-height: 1.6; overflow-wrap: anywhere; }
 .pwa-install-help { line-height: 1.8; }
 .pwa-install-help p { margin: 12px 0; }
