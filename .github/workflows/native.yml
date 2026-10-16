@@ -2,7 +2,7 @@ name: Native mobile builds
 
 on:
   pull_request:
-    paths: ['src/**', 'public/**', 'src-tauri/**', 'scripts/license-*', 'third_party/codecs/**', 'package.json', 'bun.lock', 'vite.config.ts', '.github/workflows/native.yml']
+    paths: ['src/**', 'public/**', 'src-tauri/**', '.cargo/**', 'scripts/license-*', 'third_party/codecs/**', 'package.json', 'bun.lock', 'vite.config.ts', '.github/workflows/native.yml']
   workflow_dispatch:
     inputs:
       sign_ios:
@@ -101,9 +101,10 @@ jobs:
           tools="$ANDROID_HOME/build-tools/36.0.0"
           for apk in "${apks[@]}"; do
             output="native-release/android/$(basename "${apk%-unsigned.apk}").apk"
-            "$tools/zipalign" -p -f 4 "$apk" "$RUNNER_TEMP/aligned.apk"
+            "$tools/zipalign" -P 16 -f 4 "$apk" "$RUNNER_TEMP/aligned.apk"
             "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "$ANDROID_KEY_ALIAS" --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD --out "$output" "$RUNNER_TEMP/aligned.apk"
             "$tools/apksigner" verify "$output"
+            "$tools/zipalign" -c -P 16 4 "$output"
           done
           for aab in "${aabs[@]}"; do
             output="native-release/android/$(basename "$aab")"
